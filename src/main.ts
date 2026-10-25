@@ -1,13 +1,13 @@
-import { App, MarkdownView, Plugin, setIcon } from "obsidian";
+import { App, MarkdownView, Plugin, setIcon, WorkspaceLeaf } from "obsidian";
 
 // -- Types -------------------------------------------------------------------
 
-type Evt = "play" | "pause" | "timeupdate" | "ratechange";
+type Evt = "play" | "pause" | "timeupdate" | "ratechange" | "change";
 type Cb = () => void;
 
 // -- Controller --------------------------------------------------------------
-// Maintains a pool of <audio> elements, one per note. Switching notes pauses
-// one element and adopts another, so loaded state and position are preserved.
+// Maintains a pool of <audio> elements, one per source note. Navigation only
+// moves the controls; starting another embed changes the active audio.
 
 class Controller {
 	/** notePath -> audio element (keeps loaded state, position, etc.). */
@@ -50,22 +50,8 @@ class Controller {
 		el.volume = this.volume;
 		el.playbackRate = this.rate;
 		this.activeNote = note;
+		this.emit("change");
 		void el.play();
-	}
-
-	/** Switch to a note: pause the outgoing note and adopt the new one. */
-	switchTo(note: string): boolean {
-		if (note === this.activeNote) return this.active !== null;
-
-		this.active?.pause();
-		this.activeNote = note;
-
-		const el = this.active;
-		if (!el || !el.src) return false;
-
-		// Don't auto-play. Keep the bar visible so the user can resume.
-		this.emit("pause");
-		return true;
 	}
 
 	play() { void this.active?.play(); }
@@ -96,12 +82,14 @@ class Controller {
 		const el = this.pool.get(note);
 		if (el) { el.pause(); el.remove(); this.pool.delete(note); }
 		if (this.activeNote === note) this.activeNote = "";
+		this.emit("change");
 	}
 
 	private wireEvents(el: HTMLAudioElement) {
 		el.addEventListener("play", () => { if (el === this.active) this.emit("play"); });
 		el.addEventListener("pause", () => { if (el === this.active) this.emit("pause"); });
 		el.addEventListener("timeupdate", () => { if (el === this.active) this.emit("timeupdate"); });
+		el.addEventListener("loadedmetadata", () => { if (el === this.active) this.emit("timeupdate"); });
 		el.addEventListener("ended", () => {
 			if (el === this.active) {
 				el.currentTime = 0;
@@ -137,10 +125,12 @@ class NowPlayingBar {
 	private fill: HTMLElement | null = null;
 	private timeEl: HTMLElement | null = null;
 	private rateEl: HTMLElement | null = null;
+	private sourceEl: HTMLElement | null = null;
 	private dragging = false;
 
 	constructor(private ctrl: Controller, private app: App, plugin: Plugin) {
 		ctrl.on("play", () => { this.show(); this.syncIcon(); });
+		ctrl.on("change", () => { this.show(); this.syncSource(); this.syncIcon(); this.syncProgress(); });
 		ctrl.on("pause", () => this.syncIcon());
 		ctrl.on("timeupdate", () => this.syncProgress());
 		ctrl.on("ratechange", () => { if (this.rateEl) this.rateEl.textContent = `${this.ctrl.playbackRate}x`; });
@@ -151,10 +141,18 @@ class NowPlayingBar {
 
 	show() {
 		const view = this.app.workspace.getActiveViewOfType(MarkdownView);
-		if (!view) return;
+		const vc = view?.containerEl.querySelector(".view-content");
+		if (!this.ctrl.hasActive || !vc) { this.hide(); return; }
+		if (this.bar?.parentElement === vc) return;
 
-		this.bar?.remove();
+		this.hide();
 		const bar = (this.bar = createDiv("pp-now-playing"));
+		this.sourceEl = bar.createEl("button", { cls: "pp-np-source" });
+		this.sourceEl.setAttribute("type", "button");
+		this.syncSource();
+		this.sourceEl.addEventListener("click", () => {
+			if (this.ctrl.notePath) void this.app.workspace.openLinkText(this.ctrl.notePath, "");
+		});
 
 		this.mkSkip(bar, "-5s", "Skip back 5 seconds", -5);
 		const play = (this.playBtn = bar.createDiv("clickable-icon pp-np-play"));
@@ -187,11 +185,22 @@ class NowPlayingBar {
 			this.hide();
 		});
 
-		const vc = view.containerEl.querySelector(".view-content");
-		if (vc) vc.insertBefore(bar, vc.firstChild);
+		vc.insertBefore(bar, vc.firstChild);
 	}
 
-	hide() { this.bar?.remove(); this.bar = null; }
+	hide() {
+		this.bar?.remove();
+		this.bar = this.playBtn = this.track = this.fill = this.timeEl = this.rateEl = this.sourceEl = null;
+		this.dragging = false;
+	}
+
+	private syncSource() {
+		if (!this.sourceEl) return;
+		const path = this.ctrl.notePath;
+		this.sourceEl.textContent = path.split("/").pop()?.replace(/\.md$/, "") || "Audio";
+		this.sourceEl.setAttribute("title", path ? `Open source note: ${path}` : "Audio");
+		this.sourceEl.setAttribute("aria-label", path ? `Open source note: ${path}` : "Audio");
+	}
 
 	private mkSkip(parent: HTMLElement, label: string, title: string, delta: number) {
 		const btn = parent.createDiv("clickable-icon pp-np-skip");
@@ -231,15 +240,55 @@ class NowPlayingBar {
 	destroy() { this.hide(); }
 }
 
+// -- Playing Tab Indicator ---------------------------------------------------
+
+class PlayingTabIndicator {
+	private badges = new Set<HTMLElement>();
+
+	constructor(private ctrl: Controller, private app: App) {
+		for (const event of ["play", "pause", "change"] as const) {
+			ctrl.on(event, () => this.sync());
+		}
+	}
+
+	sync() {
+		this.destroy();
+		if (!this.ctrl.playing || !this.ctrl.notePath) return;
+		for (const leaf of this.app.workspace.getLeavesOfType("markdown")) {
+			if (!(leaf.view instanceof MarkdownView) || leaf.view.file?.path !== this.ctrl.notePath) continue;
+			// Obsidian has no public tab-badge API. Keep this optional internal
+			// access isolated, and skip surfaces (such as mobile) without a header.
+			const header = (leaf as WorkspaceLeaf & { tabHeaderEl?: HTMLElement }).tabHeaderEl;
+			if (!header) continue;
+			const inner = header.querySelector(".workspace-tab-header-inner") ?? header;
+			const badge = inner.createSpan({ cls: "pp-tab-playing" });
+			const close = inner.querySelector(".workspace-tab-header-inner-close-button");
+			if (close?.parentElement === inner) inner.insertBefore(badge, close);
+			badge.setAttribute("role", "img");
+			badge.setAttribute("aria-label", "Playing audio from this note");
+			badge.setAttribute("title", "Playing audio from this note");
+			setIcon(badge, "volume-2");
+			this.badges.add(badge);
+		}
+	}
+
+	destroy() {
+		for (const badge of this.badges) badge.remove();
+		this.badges.clear();
+	}
+}
+
 // -- Plugin ------------------------------------------------------------------
 
 export default class PersistentPlayerPlugin extends Plugin {
 	private ctrl!: Controller;
 	private bar!: NowPlayingBar;
+	private tabs!: PlayingTabIndicator;
 
 	onload() {
 		this.ctrl = new Controller();
 		this.bar = new NowPlayingBar(this.ctrl, this.app, this);
+		this.tabs = new PlayingTabIndicator(this.ctrl, this.app);
 
 		this.registerDomEvent(document, "play", (e: Event) => {
 			const t = e.target;
@@ -256,20 +305,17 @@ export default class PersistentPlayerPlugin extends Plugin {
 			t.removeAttribute("src");
 			t.load();
 
-			const note = this.app.workspace.getActiveViewOfType(MarkdownView)?.file?.path ?? "";
+			// In split panes, the clicked embed need not belong to the active view.
+			const source = this.app.workspace.getLeavesOfType("markdown")
+				.find(leaf => leaf.view.containerEl.contains(t));
+			const note = source?.view instanceof MarkdownView ? source.view.file?.path ?? "" : "";
 			this.ctrl.loadAndPlay(src, note);
 		}, true);
 
-		this.registerEvent(this.app.workspace.on("active-leaf-change", () => {
-			const note = this.app.workspace.getActiveViewOfType(MarkdownView)?.file?.path ?? "";
-			if (!note || note === this.ctrl.notePath) return;
-
-			if (this.ctrl.switchTo(note)) {
-				this.bar.show();
-			} else {
-				this.bar.hide();
-			}
-		}));
+		const syncWorkspace = () => { this.bar.show(); this.tabs.sync(); };
+		this.registerEvent(this.app.workspace.on("active-leaf-change", syncWorkspace));
+		this.registerEvent(this.app.workspace.on("file-open", syncWorkspace));
+		this.registerEvent(this.app.workspace.on("layout-change", syncWorkspace));
 
 		this.addCommand({
 			id: "toggle-playback",
@@ -321,6 +367,7 @@ export default class PersistentPlayerPlugin extends Plugin {
 	onunload() {
 		this.ctrl?.destroy();
 		this.bar?.destroy();
+		this.tabs?.destroy();
 	}
 }
 

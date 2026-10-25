@@ -25,6 +25,35 @@
 .pp-np-play { flex-shrink: 0; }
 .pp-np-play svg { width: 14px; height: 14px; }
 
+.pp-now-playing .pp-np-source {
+	min-width: 0;
+	max-width: 25%;
+	flex-shrink: 1;
+	height: auto;
+	padding: 2px 4px;
+	border: 0;
+	box-shadow: none;
+	background: transparent;
+	color: var(--text-muted);
+	font-size: inherit;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	cursor: pointer;
+}
+
+.pp-now-playing .pp-np-source:hover { color: var(--text-normal); }
+
+.pp-tab-playing {
+	display: inline-flex;
+	align-items: center;
+	flex-shrink: 0;
+	margin-inline: 4px;
+	color: var(--interactive-accent);
+}
+
+.pp-tab-playing svg { width: 14px; height: 14px; }
+
 .pp-np-skip {
 	flex-shrink: 0;
 	font-size: var(--font-ui-smaller);

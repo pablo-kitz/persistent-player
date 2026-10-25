@@ -10,7 +10,8 @@
     "build": "tsc --noEmit --skipLibCheck && node esbuild.config.mjs production",
     "lint": "eslint src",
     "typecheck": "tsc --noEmit --skipLibCheck",
-    "check": "npm run lint && npm run build",
+    "test": "node --test tests/playback.test.mjs",
+    "check": "npm test && npm run lint && npm run build",
     "version": "node version-bump.mjs && git add manifest.json versions.json",
     "release": "npm run check"
   },
