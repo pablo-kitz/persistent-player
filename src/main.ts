@@ -2,7 +2,7 @@ import { App, MarkdownView, Modal, Platform, Plugin, setIcon, WorkspaceLeaf, Ite
 
 // -- Types -------------------------------------------------------------------
 
-type Evt = "play" | "pause" | "timeupdate" | "ratechange" | "change";
+type Evt = "play" | "pause" | "timeupdate" | "ratechange" | "change" | "metadata";
 type Cb = () => void;
 
 // -- Controller --------------------------------------------------------------
@@ -13,6 +13,8 @@ class Controller {
 	/** notePath -> audio element (keeps loaded state, position, etc.). */
 	private pool = new Map<string, HTMLAudioElement>();
 	private activeNote = "";
+	private playlists = new Map<string, string[]>();
+	metadata: MediaMetadataInit = {};
 	private volume = 1;
 	private rate = 1;
 	private subs = new Map<Evt, Set<Cb>>();
@@ -36,7 +38,9 @@ class Controller {
 	duration(): number { return this.active?.duration ?? 0; }
 
 	/** Start playing a new src in a note. Creates or reuses an audio element. */
-	loadAndPlay(src: string, note: string) {
+	loadAndPlay(src: string, note: string, sources?: string[]) {
+		if (sources) this.playlists.set(note, sources);
+		this.metadata = {};
 		this.active?.pause();
 
 		let el = this.pool.get(note);
@@ -54,6 +58,16 @@ class Controller {
 		void el.play();
 	}
 
+	get tracks(): string[] { return this.playlists.get(this.activeNote) ?? []; }
+	get trackIndex(): number { return this.tracks.indexOf(this.active?.src ?? ""); }
+	canSkipTrack(delta: number): boolean {
+		const index = this.trackIndex + delta;
+		return this.trackIndex >= 0 && index >= 0 && index < this.tracks.length;
+	}
+	skipTrack(delta: number) {
+		if (this.canSkipTrack(delta)) this.loadAndPlay(this.tracks[this.trackIndex + delta], this.activeNote);
+	}
+	setMetadata(metadata: MediaMetadataInit) { this.metadata = metadata; this.emit("metadata"); }
 	play() { void this.active?.play(); }
 	pause() { this.active?.pause(); }
 	toggle() { if (this.playing) this.pause(); else this.play(); }
@@ -129,10 +143,14 @@ class NowPlayingBar {
 	private dragging = false;
 	private mobileActions: HTMLElement[] = [];
 	private panel: Modal | null = null;
+	private art: HTMLElement | null = null;
+	private previous: HTMLButtonElement | null = null;
+	private next: HTMLButtonElement | null = null;
 
 	constructor(private ctrl: Controller, private app: App, plugin: Plugin) {
 		ctrl.on("play", () => { this.show(); this.syncIcon(); });
 		ctrl.on("change", () => { this.show(); this.syncSource(); this.syncIcon(); this.syncProgress(); });
+		ctrl.on("metadata", () => this.syncArtwork());
 		ctrl.on("pause", () => this.syncIcon());
 		ctrl.on("timeupdate", () => this.syncProgress());
 		ctrl.on("ratechange", () => { if (this.rateEl) this.rateEl.textContent = `${this.ctrl.playbackRate}x`; });
@@ -146,10 +164,10 @@ class NowPlayingBar {
 		if (Platform.isMobile && !this.panel) {
 			this.hide();
 			if (view && this.ctrl.hasActive) {
-				this.playBtn = view.addAction(this.ctrl.playing ? "pause" : "play", "Play or pause", () => this.ctrl.toggle());
-				this.mobileActions = [this.playBtn, view.addAction("sliders-horizontal", "Open player", () => {
+				this.mobileActions = [view.addAction("music", "Open player", () => {
 					const panel = new Modal(this.app);
 					this.panel = panel;
+					panel.modalEl.classList.add("pp-player-modal");
 					panel.onClose = () => { this.panel = null; this.show(); };
 					panel.open();
 					this.show();
@@ -159,10 +177,16 @@ class NowPlayingBar {
 		}
 		const vc = this.panel?.contentEl ?? view?.containerEl.querySelector(".view-content");
 		if (!this.ctrl.hasActive || !vc) { this.hide(); return; }
-		if (this.bar?.parentElement === vc) { this.syncSource(); return; }
+		if (this.bar?.parentElement === vc) { this.syncSource(); this.syncTracks(); this.syncArtwork(); return; }
 
 		this.hide();
 		const bar = (this.bar = createDiv("pp-now-playing"));
+		if (this.panel) {
+			bar.classList.add("pp-player-card");
+			this.art = bar.createDiv("pp-album-art");
+			this.syncArtwork();
+		}
+		this.previous = this.mkTrackButton(bar, "skip-back", "Previous audio", -1);
 		this.mkSkip(bar, "-5s", "Skip back 5 seconds", -5);
 		const play = (this.playBtn = bar.createDiv("clickable-icon pp-np-play"));
 		setIcon(play, this.ctrl.playing ? "pause" : "play");
@@ -170,6 +194,8 @@ class NowPlayingBar {
 		play.setAttribute("title", "Play or pause");
 		play.addEventListener("click", () => this.ctrl.toggle());
 		this.mkSkip(bar, "+5s", "Skip forward 5 seconds", 5);
+		this.next = this.mkTrackButton(bar, "skip-forward", "Next audio", 1);
+		this.syncTracks();
 
 		const center = bar.createDiv("pp-np-center");
 		this.track = center.createDiv("pp-np-track");
@@ -197,6 +223,7 @@ class NowPlayingBar {
 		close.setAttribute("title", "Close player");
 		close.addEventListener("click", () => {
 			this.ctrl.clearNote(this.ctrl.notePath);
+			this.panel?.close();
 			this.hide();
 		});
 
@@ -209,6 +236,35 @@ class NowPlayingBar {
 		this.bar?.remove();
 		this.bar = this.playBtn = this.track = this.fill = this.timeEl = this.rateEl = this.sourceEl = null;
 		this.dragging = false;
+		this.art = this.previous = this.next = null;
+	}
+
+	private mkTrackButton(parent: HTMLElement, icon: string, title: string, delta: number) {
+		const button = parent.createEl("button", { cls: `clickable-icon pp-np-track-button ${delta < 0 ? "pp-np-previous" : "pp-np-next"}` });
+		button.setAttribute("aria-label", title);
+		button.setAttribute("title", title);
+		setIcon(button, icon);
+		button.addEventListener("click", () => this.ctrl.skipTrack(delta));
+		return button;
+	}
+
+	private syncTracks() {
+		for (const [button, delta] of [[this.previous, -1], [this.next, 1]] as const) {
+			if (!button) continue;
+			button.hidden = this.ctrl.tracks.length < 2;
+			button.disabled = !this.ctrl.canSkipTrack(delta);
+		}
+	}
+
+	private syncArtwork() {
+		if (!this.art) return;
+		this.art.replaceChildren();
+		const artwork = this.ctrl.metadata.artwork?.[0];
+		if (artwork) {
+			const image = this.art.createEl("img");
+			image.src = artwork.src;
+			image.alt = this.ctrl.metadata.album || "Album artwork";
+		} else setIcon(this.art, "music");
 	}
 
 	private syncSource() {
@@ -221,7 +277,7 @@ class NowPlayingBar {
 	}
 
 	private mkSkip(parent: HTMLElement, label: string, title: string, delta: number) {
-		const btn = parent.createDiv("clickable-icon pp-np-skip");
+		const btn = parent.createDiv(`clickable-icon pp-np-skip ${delta < 0 ? "pp-np-back" : "pp-np-forward"}`);
 		btn.textContent = label;
 		btn.setAttribute("aria-label", title);
 		btn.setAttribute("title", title);
@@ -235,7 +291,7 @@ class NowPlayingBar {
 	private syncProgress() {
 		const d = this.ctrl.duration();
 		const t = this.ctrl.currentTime;
-		if (d && this.fill && !this.dragging) this.fill.style.width = `${(t / d) * 100}%`;
+		if (this.fill && !this.dragging) this.fill.style.width = `${d > 0 && Number.isFinite(d) ? (t / d) * 100 : 0}%`;
 		if (this.timeEl) this.timeEl.textContent = `${fmt(t)} / ${fmt(d)}`;
 	}
 
@@ -318,18 +374,19 @@ export default class PersistentPlayerPlugin extends Plugin {
 			if (!(t instanceof HTMLAudioElement)) return;
 			if (t.hasClass("pp-pooled")) return;
 			if (!t.closest(".workspace")) return;
-			const src = t.src;
+			const src = t.src || t.currentSrc;
 			if (!src) return;
 
-			// Neutralise the inline embed so only the pooled element plays.
-			t.removeAttribute("src");
-			t.load();
+			// Pause the inline embed, preserving its source for track navigation.
+			t.pause();
 
 			// In split panes, the clicked embed need not belong to the active view.
 			const source = this.app.workspace.getLeavesOfType("markdown")
 				.find(leaf => leaf.view.containerEl.contains(t));
 			const note = source?.view instanceof MarkdownView ? source.view.file?.path ?? "" : "";
-			this.ctrl.loadAndPlay(src, note);
+			const sources = source ? Array.from(source.view.containerEl.querySelectorAll("audio"))
+				.map(audio => audio.src || audio.currentSrc).filter(Boolean) : [src];
+			this.ctrl.loadAndPlay(src, note, sources);
 		}, true);
 
 		const syncWorkspace = () => { this.bar.show(); this.tabs.sync(); };
@@ -402,13 +459,13 @@ function fmt(sec: number): string {
 // Metadata always follows the playing source, never the currently viewed note.
 class SystemMedia {
  private revision = 0;
- private artworkUrl: string | null = null;
  private session = typeof navigator !== "undefined" ? navigator.mediaSession : undefined;
  private actions: MediaSessionAction[] = [];
  constructor(private ctrl: Controller, private app: App) {
   if (!this.session) return;
   const handlers: Partial<Record<MediaSessionAction, MediaSessionActionHandler>> = {
    play: () => ctrl.play(), pause: () => ctrl.pause(),
+   previoustrack: () => ctrl.skipTrack(-1), nexttrack: () => ctrl.skipTrack(1),
    seekbackward: d => ctrl.seekBy(-(d.seekOffset ?? 5)),
    seekforward: d => ctrl.seekBy(d.seekOffset ?? 5),
    seekto: d => { if (d.seekTime !== undefined) ctrl.seek(d.seekTime); },
@@ -432,8 +489,6 @@ class SystemMedia {
  private async metadata() {
   const revision = ++this.revision;
   if (!this.session) return;
-  if (this.artworkUrl) URL.revokeObjectURL(this.artworkUrl);
-  this.artworkUrl = null;
   this.session.metadata = null;
   this.sync();
   if (!this.ctrl.active) return;
@@ -442,32 +497,73 @@ class SystemMedia {
   const text = (key: string) => typeof props?.[key] === "string" ? props[key] : "";
   const metadata: MediaMetadataInit = {title: text("title") || file?.name.replace(/\.md$/, "") || "Audio", artist: text("artist"), album: text("album")};
   this.session.metadata = new MediaMetadata(metadata);
+  this.ctrl.setMetadata(metadata);
   try {
    const { parseBlob } = await import("music-metadata");
-   // Vault resource URLs require the webview loader, not an HTTP request.
-   // eslint-disable-next-line no-restricted-globals
-   const response = await fetch(this.ctrl.active.src);
-   if (!response.ok) return;
-   const tags = (await parseBlob(await response.blob(), {skipCovers: false})).common;
+   const src = this.ctrl.active.src;
+   // WKWebView resource URLs are not reliably fetchable on iOS. Use the
+   // public vault API for local audio, retaining fetch for remote embeds.
+   const resourceKey = (url: string) => url.split("?")[0];
+   const audioFile = this.app.vault.getFiles().find(candidate =>
+    resourceKey(this.app.vault.getResourcePath(candidate)) === resourceKey(src));
+   let blob: Blob;
+   if (audioFile) blob = new Blob([await this.app.vault.readBinary(audioFile)]);
+   else {
+    // eslint-disable-next-line no-restricted-globals
+    const response = await fetch(src);
+    if (!response.ok) return;
+    blob = await response.blob();
+   }
+   if (revision !== this.revision) return;
+   const tags = (await parseBlob(blob, {skipCovers: false})).common;
    if (revision !== this.revision) return;
    metadata.title = text("title") || tags.title || metadata.title;
    metadata.artist = text("artist") || tags.artist || "";
    metadata.album = text("album") || tags.album || "";
    const picture = tags.picture?.[0];
    if (picture) {
-    this.artworkUrl = URL.createObjectURL(new Blob([new Uint8Array(picture.data)], {type: picture.format}));
-    metadata.artwork = [{src: this.artworkUrl, type: picture.format}];
+    try {
+     metadata.artwork = [await mediaArtwork(new Blob([new Uint8Array(picture.data)], {type: picture.format}))];
+    } catch { /* Invalid cover art must not discard the track's text tags. */ }
+    if (revision !== this.revision) return;
    }
    this.session.metadata = new MediaMetadata(metadata);
+   this.ctrl.setMetadata(metadata);
   } catch { /* Unavailable tags must never interrupt playback. */ }
  }
  destroy() {
   ++this.revision;
-  if (this.artworkUrl) URL.revokeObjectURL(this.artworkUrl);
   if (!this.session) return;
   for (const action of this.actions) this.session.setActionHandler(action, null);
   this.session.metadata = null;
   this.session.playbackState = "none";
   try { this.session.setPositionState(); } catch { /* Unsupported host. */ }
  }
+}
+
+// Give the native media surface self-contained, bounded artwork rather than a
+// webview-scoped blob URL. Normalize embedded formats and declare actual size.
+async function mediaArtwork(blob: Blob): Promise<MediaImage> {
+ const src = await new Promise<string>((resolve, reject) => {
+  const reader = new FileReader();
+  reader.onload = () => typeof reader.result === "string" ? resolve(reader.result) : reject(new Error("Invalid artwork"));
+  reader.onerror = () => reject(reader.error ?? new Error("Unreadable artwork"));
+  reader.readAsDataURL(blob);
+ });
+ const image = new Image();
+ await new Promise<void>((resolve, reject) => {
+  image.onload = () => resolve();
+  image.onerror = () => reject(new Error("Unsupported artwork"));
+  image.src = src;
+ });
+ const canvas = document.createElement("canvas");
+ canvas.width = canvas.height = 512;
+ const context = canvas.getContext("2d");
+ if (!context || !image.naturalWidth || !image.naturalHeight) throw new Error("Invalid artwork dimensions");
+ context.fillStyle = "#ffffff";
+ context.fillRect(0, 0, 512, 512);
+ const scale = Math.min(512 / image.naturalWidth, 512 / image.naturalHeight);
+ const width = image.naturalWidth * scale, height = image.naturalHeight * scale;
+ context.drawImage(image, (512 - width) / 2, (512 - height) / 2, width, height);
+ return {src: canvas.toDataURL("image/jpeg", 0.9), sizes: "512x512", type: "image/jpeg"};
 }

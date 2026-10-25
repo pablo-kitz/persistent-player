@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.0.3
+
+- Keep playback running across notes and show the playing source tab.
+- Use a single music action on mobile to open an album-art player.
+- Add previous/next audio controls in source-note order, with square transport buttons.
+- Integrate system media controls and normalize embedded artwork for iOS.
+
+
 ## 1.0.2
 
 - Use `createSpan` for the time label instead of `createEl("span", ...)`.

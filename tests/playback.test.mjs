@@ -10,7 +10,7 @@ const { code } = transformSync(readFileSync(new URL("../src/main.ts", import.met
 
 // A small host double: media events are controlled so navigation can be tested
 // without a decoder, vault, or running Obsidian instance.
-function setup() {
+function setup(mobile = false) {
 	const mediaListeners = new Map();
 	class Element {
 		constructor(tag = "div", cls = "") {
@@ -22,8 +22,10 @@ function setup() {
 			this.style = {};
 			this.listeners = new Map();
 			this.textContent = "";
+            this.classList = { add: cls => { this.cls += ` ${cls}`; } };
 		}
-		get firstChild() { return this.children[0] ?? null; }
+		replaceChildren() { for (const child of [...this.children]) child.remove(); }
+        get firstChild() { return this.children[0] ?? null; }
 		hasClass(cls) { return this.cls.split(" ").includes(cls); }
 		matches(selector) { return selector.startsWith(".") ? this.hasClass(selector.slice(1)) : this.tag === selector; }
 		createEl(tag, options = {}) {
@@ -82,13 +84,22 @@ function setup() {
 		pause() { if (!this.paused) { this.paused = true; this.emit("pause"); } }
 		load() { this.paused = true; }
 	}
-	class MarkdownView {
+	class Modal {
+        constructor() { this.modalEl = body.createDiv(); this.contentEl = this.modalEl.createDiv(); }
+        open() {}
+        close() { this.modalEl.remove(); this.onClose?.(); }
+    }
+    class MarkdownView {
 		constructor(path) {
 			this.file = { path };
 			this.containerEl = workspaceEl.createDiv();
 			this.content = this.containerEl.createDiv("view-content");
 		}
 	}
+	MarkdownView.prototype.addAction = function(icon, title, callback) {
+        const el = this.containerEl.createDiv("action"); el.icon = icon;
+        el.addEventListener("click", callback); return el;
+    };
 	class Plugin {
 		constructor(app) { this.app = app; this.cleanups = []; this.commands = new Map(); }
 		registerDomEvent(target, event, cb) {
@@ -125,7 +136,7 @@ function setup() {
 	runInNewContext(code, {
 		module, exports: module.exports, document, HTMLAudioElement: Audio,
 		createDiv: cls => new Element("div", cls),
-		require: () => ({ MarkdownView, ItemView: MarkdownView, Platform: {isMobile: false}, Plugin, setIcon: (el, icon) => { el.icon = icon; } }),
+		require: () => ({ MarkdownView, ItemView: MarkdownView, Platform: {isMobile: mobile}, Modal, Plugin, setIcon: (el, icon) => { el.icon = icon; } }),
 	});
 	const plugin = new module.exports.default({ workspace });
 	plugin.onload();
@@ -265,3 +276,82 @@ test("non-Markdown focus hides only the controls; missing tab headers are safe",
 	assert.equal(h.body.querySelector(".pp-pooled"), null);
 	assert.equal(h.body.querySelector(".pp-now-playing"), null);
 });
+
+
+test("previous and next follow source-note order and stop at playlist boundaries", () => {
+ const h = setup(); const a = h.note("Playlist.md"); h.focus(a);
+ const first = h.embed(a, "app://vault/first.mp3");
+ h.embed(a, "app://vault/second.mp3");
+ h.embed(a, "app://vault/third.mp3");
+ void first.play();
+ const buttons = () => h.body.querySelectorAll(".pp-np-track-button");
+ assert.equal(buttons()[0].disabled, true);
+ buttons()[1].emit("click");
+ const audio = h.body.querySelector(".pp-pooled");
+ assert.equal(audio.src, "app://vault/second.mp3");
+ const other = h.note("Other.md"); h.focus(other);
+ buttons()[1].emit("click");
+ assert.equal(audio.src, "app://vault/third.mp3");
+ assert.equal(buttons()[1].disabled, true);
+ buttons()[1].emit("click");
+ assert.equal(audio.src, "app://vault/third.mp3");
+ buttons()[0].emit("click");
+ assert.equal(audio.src, "app://vault/second.mp3");
+ assert.equal(first.src, "app://vault/first.mp3");
+});
+
+test("mobile exposes one music action and opens the album-art player", () => {
+ const h = setup(true); const a = h.note("Song.md"); h.focus(a); h.start(a);
+ let actions = h.body.querySelectorAll(".action");
+ assert.equal(actions.length, 1); assert.equal(actions[0].icon, "music");
+ actions[0].emit("click");
+ assert.ok(h.body.querySelector(".pp-player-card"));
+ assert.equal(h.body.querySelector(".pp-album-art").icon, "music");
+ h.body.querySelector(".pp-np-play").emit("click");
+ assert.equal(h.body.querySelector(".pp-pooled").paused, true);
+ h.body.querySelector(".pp-np-close").emit("click");
+ assert.equal(h.body.querySelector(".pp-now-playing"), null);
+ assert.equal(h.body.querySelectorAll(".action").length, 0);
+});
+
+test("native artwork is a sized JPEG data URL and preserves cover proportions", async () => {
+ const draws = [];
+ const canvas = { toDataURL: (type, quality) => {
+  assert.equal(type, "image/jpeg"); assert.equal(quality, 0.9);
+  return "data:image/jpeg;base64,cover";
+ }, getContext: () => ({ fillRect() {}, drawImage: (...args) => draws.push(args) }) };
+ class FileReader {
+  readAsDataURL() { this.result = "data:image/png;base64,original"; this.onload(); }
+ }
+ class Image {
+  naturalWidth = 1000; naturalHeight = 500;
+  set src(value) { assert.equal(value, "data:image/png;base64,original"); this.onload(); }
+ }
+ const context = { module: {exports: {}}, require: () => ({Plugin: class {}}), FileReader, Image,
+  document: {createElement: () => canvas} };
+ runInNewContext(code + "\nmodule.exports.artwork = mediaArtwork;", context);
+ const artwork = await context.module.exports.artwork({});
+ assert.equal(artwork.src, "data:image/jpeg;base64,cover");
+ assert.equal(artwork.sizes, "512x512");
+ assert.equal(artwork.type, "image/jpeg");
+ assert.equal(canvas.width, 512); assert.equal(canvas.height, 512);
+ assert.deepEqual(draws[0].slice(1), [0, 128, 512, 256]);
+ Image.prototype.naturalWidth = 0;
+ class BrokenImage { set src(value) { this.onerror(); } }
+ context.Image = BrokenImage;
+ await assert.rejects(context.module.exports.artwork({}), /Unsupported artwork/);
+});
+
+for (const mobile of [false, true]) {
+ test(`transport order with multiple tracks (${mobile ? "mobile" : "desktop"})`, () => {
+  const h = setup(mobile); const a = h.note("Playlist.md"); h.focus(a);
+  const first = h.embed(a, "app://vault/first.mp3");
+  h.embed(a, "app://vault/second.mp3"); void first.play();
+  if (mobile) h.body.querySelector(".action").emit("click");
+  const bar = h.body.querySelector(".pp-now-playing");
+  const controls = bar.children.filter(el => el.hasClass("clickable-icon"));
+  assert.deepEqual(controls.map(el => el.attributes["aria-label"]), [
+   "Previous audio", "Skip back 5 seconds", "Play or pause", "Skip forward 5 seconds", "Next audio",
+  ]);
+ });
+}
