@@ -39,7 +39,14 @@ class Controller {
 
 	/** Start playing a new src in a note. Creates or reuses an audio element. */
 	loadAndPlay(src: string, note: string, sources?: string[]) {
-		if (sources) this.playlists.set(note, sources);
+		if (sources) {
+			const unique = new Map<string, string>();
+			for (const source of sources) {
+				const key = audioSourceKey(source);
+				if (!unique.has(key)) unique.set(key, source);
+			}
+			this.playlists.set(note, [...unique.values()]);
+		}
 		this.metadata = {};
 		this.active?.pause();
 
@@ -59,7 +66,7 @@ class Controller {
 	}
 
 	get tracks(): string[] { return this.playlists.get(this.activeNote) ?? []; }
-	get trackIndex(): number { return this.tracks.indexOf(this.active?.src ?? ""); }
+	get trackIndex(): number { return this.tracks.findIndex(src => audioSourceKey(src) === audioSourceKey(this.active?.src ?? "")); }
 	canSkipTrack(delta: number): boolean {
 		const index = this.trackIndex + delta;
 		return this.trackIndex >= 0 && index >= 0 && index < this.tracks.length;
@@ -146,11 +153,12 @@ class NowPlayingBar {
 	private art: HTMLElement | null = null;
 	private previous: HTMLButtonElement | null = null;
 	private next: HTMLButtonElement | null = null;
+	private identity: HTMLElement | null = null;
 
 	constructor(private ctrl: Controller, private app: App, plugin: Plugin) {
 		ctrl.on("play", () => { this.show(); this.syncIcon(); });
-		ctrl.on("change", () => { this.show(); this.syncSource(); this.syncIcon(); this.syncProgress(); });
-		ctrl.on("metadata", () => this.syncArtwork());
+		ctrl.on("change", () => { this.show(); this.syncSource(); this.syncIcon(); this.syncProgress(); this.syncIdentity(); });
+		ctrl.on("metadata", () => { this.syncArtwork(); this.syncIdentity(); });
 		ctrl.on("pause", () => this.syncIcon());
 		ctrl.on("timeupdate", () => this.syncProgress());
 		ctrl.on("ratechange", () => { if (this.rateEl) this.rateEl.textContent = `${this.ctrl.playbackRate}x`; });
@@ -159,8 +167,15 @@ class NowPlayingBar {
 		plugin.registerDomEvent(document, "pointerup", () => { this.dragging = false; });
 	}
 
+	private mainView(): ItemView | null {
+		// Restrict recency to the central workspace; sidebar focus must not
+		// relocate the player or change whether its source-note link is shown.
+		const view = this.app.workspace.getMostRecentLeaf(this.app.workspace.rootSplit)?.view;
+		return view instanceof ItemView ? view : null;
+	}
+
 	show() {
-		const view = this.app.workspace.getActiveViewOfType(ItemView);
+		const view = this.mainView();
 		if (Platform.isMobile && !this.panel) {
 			this.hide();
 			if (view && this.ctrl.hasActive) {
@@ -177,7 +192,7 @@ class NowPlayingBar {
 		}
 		const vc = this.panel?.contentEl ?? view?.containerEl.querySelector(".view-content");
 		if (!this.ctrl.hasActive || !vc) { this.hide(); return; }
-		if (this.bar?.parentElement === vc) { this.syncSource(); this.syncTracks(); this.syncArtwork(); return; }
+		if (this.bar?.parentElement === vc) { this.syncSource(); this.syncTracks(); this.syncArtwork(); this.syncIdentity(); return; }
 
 		this.hide();
 		const bar = (this.bar = createDiv("pp-now-playing"));
@@ -187,15 +202,17 @@ class NowPlayingBar {
 			this.syncArtwork();
 		}
 		this.previous = this.mkTrackButton(bar, "skip-back", "Previous audio", -1);
-		this.mkSkip(bar, "-5s", "Skip back 5 seconds", -5);
+		if (Platform.isMobile) this.mkSkip(bar, "-5s", "Skip back 5 seconds", -5);
 		const play = (this.playBtn = bar.createDiv("clickable-icon pp-np-play"));
 		setIcon(play, this.ctrl.playing ? "pause" : "play");
 		play.setAttribute("aria-label", "Play or pause");
 		play.setAttribute("title", "Play or pause");
 		play.addEventListener("click", () => this.ctrl.toggle());
-		this.mkSkip(bar, "+5s", "Skip forward 5 seconds", 5);
+		if (Platform.isMobile) this.mkSkip(bar, "+5s", "Skip forward 5 seconds", 5);
 		this.next = this.mkTrackButton(bar, "skip-forward", "Next audio", 1);
 		this.syncTracks();
+		this.identity = bar.createDiv("pp-np-identity");
+		this.syncIdentity();
 
 		const center = bar.createDiv("pp-np-center");
 		this.track = center.createDiv("pp-np-track");
@@ -206,21 +223,26 @@ class NowPlayingBar {
 		const right = bar.createDiv("pp-np-right");
 		this.timeEl = right.createSpan({ cls: "pp-np-time" });
 		this.syncProgress();
+		if (!Platform.isMobile) this.mkSkip(right, "-5s", "Skip back 5 seconds", -5);
 		this.rateEl = right.createDiv("clickable-icon pp-np-rate");
 		this.rateEl.textContent = `${this.ctrl.playbackRate}x`;
 		this.rateEl.setAttribute("aria-label", "Playback speed");
 		this.rateEl.setAttribute("title", "Playback speed");
 		this.rateEl.addEventListener("click", () => this.cycleRate());
-		this.sourceEl = right.createEl("button", { cls: "pp-np-source" });
+		if (!Platform.isMobile) this.mkSkip(right, "+5s", "Skip forward 5 seconds", 5);
+		this.sourceEl = (Platform.isMobile ? right : bar).createEl("button", { cls: "pp-np-source" });
 		this.sourceEl.setAttribute("type", "button");
+		if (!Platform.isMobile) bar.insertBefore(this.sourceEl, center);
 		this.syncSource();
 		this.sourceEl.addEventListener("click", () => {
 			if (this.ctrl.notePath) void this.app.workspace.openLinkText(this.ctrl.notePath, "");
 		});
 		const close = right.createDiv("clickable-icon pp-np-close");
-		setIcon(close, "x");
-		close.setAttribute("aria-label", "Close player");
-		close.setAttribute("title", "Close player");
+		setIcon(close, Platform.isMobile ? "square" : "x");
+		if (Platform.isMobile) close.createSpan({ text: "Stop" });
+		const closeLabel = Platform.isMobile ? "Stop playback" : "Close player";
+		close.setAttribute("aria-label", closeLabel);
+		close.setAttribute("title", closeLabel);
 		close.addEventListener("click", () => {
 			this.ctrl.clearNote(this.ctrl.notePath);
 			this.panel?.close();
@@ -236,7 +258,7 @@ class NowPlayingBar {
 		this.bar?.remove();
 		this.bar = this.playBtn = this.track = this.fill = this.timeEl = this.rateEl = this.sourceEl = null;
 		this.dragging = false;
-		this.art = this.previous = this.next = null;
+		this.art = this.previous = this.next = this.identity = null;
 	}
 
 	private mkTrackButton(parent: HTMLElement, icon: string, title: string, delta: number) {
@@ -251,7 +273,7 @@ class NowPlayingBar {
 	private syncTracks() {
 		for (const [button, delta] of [[this.previous, -1], [this.next, 1]] as const) {
 			if (!button) continue;
-			button.hidden = this.ctrl.tracks.length < 2;
+			button.hidden = Platform.isMobile && this.ctrl.tracks.length < 2;
 			button.disabled = !this.ctrl.canSkipTrack(delta);
 		}
 	}
@@ -267,11 +289,42 @@ class NowPlayingBar {
 		} else setIcon(this.art, "music");
 	}
 
+	private syncIdentity() {
+		if (!this.identity) return;
+		this.identity.replaceChildren();
+		const metadata = this.ctrl.metadata;
+		const filename = audioFilename(this.ctrl.active?.src ?? "");
+		const label = this.identity.createSpan({ cls: "pp-np-title" });
+		label.textContent = metadata.title || filename;
+		label.setAttribute("title", filename);
+		if (Platform.isMobile) {
+			for (const value of [metadata.artist, metadata.album]) {
+				if (value) this.identity.createDiv({ cls: "pp-track-detail", text: value });
+			}
+			return;
+		}
+		if (!metadata.title && !metadata.artist && !metadata.album) return;
+		label.setAttribute("tabindex", "0");
+		label.setAttribute("aria-label", `${metadata.title || filename}. Recording details`);
+		const card = this.identity.createDiv("pp-track-card");
+		const art = card.createDiv("pp-album-art");
+		const artwork = metadata.artwork?.[0];
+		if (artwork) {
+			const image = art.createEl("img"); image.src = artwork.src;
+			image.alt = metadata.album || "Album artwork";
+		} else setIcon(art, "music");
+		card.createDiv({ cls: "pp-track-title", text: metadata.title || filename });
+		for (const value of [metadata.artist, metadata.album]) {
+			if (value) card.createDiv({ cls: "pp-track-detail", text: value });
+		}
+	}
+
 	private syncSource() {
 		if (!this.sourceEl) return;
 		const path = this.ctrl.notePath;
-		this.sourceEl.hidden = this.app.workspace.getActiveViewOfType(MarkdownView)?.file?.path === path;
-		this.sourceEl.textContent = path.split("/").pop()?.replace(/\.md$/, "") || "Audio";
+		const view = this.mainView();
+		this.sourceEl.hidden = view instanceof MarkdownView && view.file?.path === path;
+		setIcon(this.sourceEl, "file-up-right");
 		this.sourceEl.setAttribute("title", path ? `Open source note: ${path}` : "Audio");
 		this.sourceEl.setAttribute("aria-label", path ? `Open source note: ${path}` : "Audio");
 	}
@@ -384,8 +437,18 @@ export default class PersistentPlayerPlugin extends Plugin {
 			const source = this.app.workspace.getLeavesOfType("markdown")
 				.find(leaf => leaf.view.containerEl.contains(t));
 			const note = source?.view instanceof MarkdownView ? source.view.file?.path ?? "" : "";
-			const sources = source ? Array.from(source.view.containerEl.querySelectorAll("audio"))
-				.map(audio => audio.src || audio.currentSrc).filter(Boolean) : [src];
+			const view = source?.view;
+			const cache = view instanceof MarkdownView && view.file
+				? this.app.metadataCache?.getFileCache(view.file) : null;
+			// Prefer actual note embeds: plugins and reading/editing surfaces can
+			// render additional audio elements for the same note.
+			const sources = cache?.embeds ? cache.embeds.flatMap(embed => {
+				const file = this.app.metadataCache.getFirstLinkpathDest(embed.link.split("#")[0], note);
+				return file && /^(mp3|wav|m4a|ogg|oga|flac|aac|aiff?|opus|webm|3gp)$/i.test(file.extension)
+					? [this.app.vault.getResourcePath(file)] : [];
+			}) : source ? Array.from(source.view.containerEl.querySelectorAll("audio"))
+				.map(audio => audio.src || audio.currentSrc).filter(Boolean) : [];
+			if (!sources.some(candidate => audioSourceKey(candidate) === audioSourceKey(src))) sources.push(src);
 			this.ctrl.loadAndPlay(src, note, sources);
 		}, true);
 
@@ -462,7 +525,6 @@ class SystemMedia {
  private session = typeof navigator !== "undefined" ? navigator.mediaSession : undefined;
  private actions: MediaSessionAction[] = [];
  constructor(private ctrl: Controller, private app: App) {
-  if (!this.session) return;
   const handlers: Partial<Record<MediaSessionAction, MediaSessionActionHandler>> = {
    play: () => ctrl.play(), pause: () => ctrl.pause(),
    previoustrack: () => ctrl.skipTrack(-1), nexttrack: () => ctrl.skipTrack(1),
@@ -472,7 +534,7 @@ class SystemMedia {
    stop: () => ctrl.clearNote(ctrl.notePath),
   };
   for (const action of Object.keys(handlers) as MediaSessionAction[]) {
-   try { this.session.setActionHandler(action, handlers[action]!); this.actions.push(action); } catch { /* Unsupported host action. */ }
+   try { this.session?.setActionHandler(action, handlers[action]!); this.actions.push(action); } catch { /* Unsupported host action. */ }
   }
   ctrl.on("change", () => { void this.metadata(); });
   for (const event of ["play", "pause", "timeupdate", "ratechange"] as const) ctrl.on(event, () => this.sync());
@@ -488,15 +550,15 @@ class SystemMedia {
  }
  private async metadata() {
   const revision = ++this.revision;
-  if (!this.session) return;
-  this.session.metadata = null;
+  if (!this.app.vault) return;
+  if (this.session) this.session.metadata = null;
   this.sync();
   if (!this.ctrl.active) return;
   const file = this.app.vault.getAbstractFileByPath(this.ctrl.notePath);
   const props = file instanceof TFile ? this.app.metadataCache.getFileCache(file)?.frontmatter : undefined;
   const text = (key: string) => typeof props?.[key] === "string" ? props[key] : "";
-  const metadata: MediaMetadataInit = {title: text("title") || file?.name.replace(/\.md$/, "") || "Audio", artist: text("artist"), album: text("album")};
-  this.session.metadata = new MediaMetadata(metadata);
+  const metadata: MediaMetadataInit = {title: text("title"), artist: text("artist"), album: text("album")};
+  if (this.session) this.session.metadata = new MediaMetadata({...metadata, title: metadata.title || audioFilename(this.ctrl.active?.src ?? "")});
   this.ctrl.setMetadata(metadata);
   try {
    const { parseBlob } = await import("music-metadata");
@@ -517,9 +579,9 @@ class SystemMedia {
    if (revision !== this.revision) return;
    const tags = (await parseBlob(blob, {skipCovers: false})).common;
    if (revision !== this.revision) return;
-   metadata.title = text("title") || tags.title || metadata.title;
-   metadata.artist = text("artist") || tags.artist || "";
-   metadata.album = text("album") || tags.album || "";
+   metadata.title = tags.title || text("title");
+   metadata.artist = tags.artist || text("artist");
+   metadata.album = tags.album || text("album");
    const picture = tags.picture?.[0];
    if (picture) {
     try {
@@ -527,7 +589,7 @@ class SystemMedia {
     } catch { /* Invalid cover art must not discard the track's text tags. */ }
     if (revision !== this.revision) return;
    }
-   this.session.metadata = new MediaMetadata(metadata);
+   if (this.session) this.session.metadata = new MediaMetadata({...metadata, title: metadata.title || audioFilename(this.ctrl.active?.src ?? "")});
    this.ctrl.setMetadata(metadata);
   } catch { /* Unavailable tags must never interrupt playback. */ }
  }
@@ -566,4 +628,15 @@ async function mediaArtwork(blob: Blob): Promise<MediaImage> {
  const width = image.naturalWidth * scale, height = image.naturalHeight * scale;
  context.drawImage(image, (512 - width) / 2, (512 - height) / 2, width, height);
  return {src: canvas.toDataURL("image/jpeg", 0.9), sizes: "512x512", type: "image/jpeg"};
+}
+
+// Obsidian may add different cache-busting parameters to the same vault file.
+// Remote URLs retain their query because it can identify a distinct recording.
+function audioSourceKey(src: string): string {
+ return /^(app|capacitor|file):/i.test(src) ? src.split(/[?#]/)[0] : src;
+}
+
+function audioFilename(src: string): string {
+ const name = src.split(/[?#]/)[0].split("/").pop() || "Audio";
+ try { return decodeURIComponent(name); } catch { return name; }
 }

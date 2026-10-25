@@ -31,6 +31,7 @@ function setup(mobile = false) {
 		createEl(tag, options = {}) {
 			const child = tag === "audio" ? new Audio() : new Element(tag);
 			child.cls = typeof options === "string" ? options : options.cls ?? "";
+			if (typeof options === "object" && options.text) child.textContent = options.text;
 			this.insertBefore(child, null);
 			return child;
 		}
@@ -114,7 +115,10 @@ function setup(mobile = false) {
 	const workspaceEvents = new Map();
 	const leaves = [];
 	let active = null;
+	let recentMain = null;
 	const workspace = {
+		rootSplit: {},
+		getMostRecentLeaf: () => recentMain,
 		getActiveViewOfType: type => active?.view instanceof type ? active.view : null,
 		getLeavesOfType: () => leaves,
 		on(event, cb) {
@@ -136,7 +140,7 @@ function setup(mobile = false) {
 	runInNewContext(code, {
 		module, exports: module.exports, document, HTMLAudioElement: Audio,
 		createDiv: cls => new Element("div", cls),
-		require: () => ({ MarkdownView, ItemView: MarkdownView, Platform: {isMobile: mobile}, Modal, Plugin, setIcon: (el, icon) => { el.icon = icon; } }),
+		require: () => ({ MarkdownView, ItemView: MarkdownView, Platform: {isMobile: mobile}, Modal, TFile: class {}, Plugin, setIcon: (el, icon) => { el.icon = icon; } }),
 	});
 	const plugin = new module.exports.default({ workspace });
 	plugin.onload();
@@ -151,7 +155,7 @@ function setup(mobile = false) {
 		return leaf;
 	}
 	function emit(event) { for (const cb of workspaceEvents.get(event) ?? []) cb(); }
-	function focus(leaf) { active = leaf; emit("active-leaf-change"); }
+	function focus(leaf) { active = leaf; if (!leaf.sidebar) recentMain = leaf; emit("active-leaf-change"); }
 	function embed(leaf, src = "app://vault/song.mp3") {
 		const audio = leaf.view.content.createEl("audio");
 		audio.src = src;
@@ -185,10 +189,8 @@ test("navigation to another audio note preserves playback and moves the controls
 	assert.ok(b.view.content.querySelector(".pp-now-playing"));
 	const source = b.view.content.querySelector(".pp-np-source");
 	assert.equal(source.hidden, false);
-	assert.equal(source.parentElement.cls, "pp-np-right");
-	const controls = source.parentElement.children;
-	assert.equal(controls[controls.indexOf(source) - 1].cls, "clickable-icon pp-np-rate");
-	assert.equal(controls[controls.indexOf(source) + 1].cls, "clickable-icon pp-np-close");
+	assert.equal(source.parentElement.cls, "pp-now-playing");
+	assert.equal(source.icon, "file-up-right");
 	assert.ok(a.tabHeaderEl.querySelector(".pp-tab-playing"));
 	assert.equal(b.tabHeaderEl.querySelector(".pp-tab-playing"), null);
 	b.view.content.querySelector(".pp-np-source").emit("click");
@@ -251,11 +253,11 @@ test("an explicit new embed switches playback and keeps its actual source in spl
 	assert.equal(second.paused, false);
 	assert.equal(a.tabHeaderEl.querySelector(".pp-tab-playing"), null);
 	assert.ok(b.tabHeaderEl.querySelector(".pp-tab-playing"));
-	assert.equal(h.body.querySelector(".pp-np-source").textContent, "Second");
+	assert.equal(h.body.querySelector(".pp-np-source").attributes["title"], "Open source note: Second.md");
 	assert.equal(h.start(a), first);
 	assert.equal(first.currentTime, 19);
 	assert.equal(second.paused, true);
-	assert.equal(h.body.querySelector(".pp-np-source").textContent, "First");
+	assert.equal(h.body.querySelector(".pp-np-source").attributes["title"], "Open source note: First.md");
 });
 
 test("non-Markdown focus hides only the controls; missing tab headers are safe", () => {
@@ -350,8 +352,75 @@ for (const mobile of [false, true]) {
   if (mobile) h.body.querySelector(".action").emit("click");
   const bar = h.body.querySelector(".pp-now-playing");
   const controls = bar.children.filter(el => el.hasClass("clickable-icon"));
-  assert.deepEqual(controls.map(el => el.attributes["aria-label"]), [
+  assert.deepEqual(controls.map(el => el.attributes["aria-label"]), mobile ? [
    "Previous audio", "Skip back 5 seconds", "Play or pause", "Skip forward 5 seconds", "Next audio",
-  ]);
+  ] : ["Previous audio", "Play or pause", "Next audio"]);
+  if (!mobile) assert.deepEqual(bar.querySelector(".pp-np-right").children.map(el => el.attributes["aria-label"]),
+   [undefined, "Skip back 5 seconds", "Playback speed", "Skip forward 5 seconds", "Close player"]);
+ });
+}
+
+test("duplicate local audio renders do not create a next track", () => {
+ const h = setup(); const a = h.note("Single.md"); h.focus(a);
+ const first = h.embed(a, "app://vault/song.mp3?mtime=1");
+ h.embed(a, "app://vault/song.mp3?mtime=2"); void first.play();
+ for (const button of h.body.querySelectorAll(".pp-np-track-button")) {
+  assert.equal(button.hidden, false); assert.equal(button.disabled, true);
+ }
+ const stop = h.body.querySelector(".pp-np-close");
+ assert.equal(stop.icon, "x"); assert.equal(stop.attributes["aria-label"], "Close player");
+ stop.emit("click"); assert.equal(h.body.querySelector(".pp-pooled"), null);
+});
+
+test("source embeds exclude cover art and plugin audio from the single-track note", () => {
+ const h = setup(); const a = h.note("Elderberry Wine.md"); h.focus(a);
+ const audioPath = "Repertoire/Wednesday - Elderberry Wine/Wednesday - Elderberry Wine.mp3";
+ const coverPath = "Repertoire/Wednesday - Elderberry Wine/cover.jpg";
+ h.plugin.app.metadataCache = {
+  getFileCache: () => ({embeds: [{link: audioPath}, {link: coverPath}]}),
+  getFirstLinkpathDest: link => ({path: link, extension: link.split(".").pop()}),
+ };
+ h.plugin.app.vault = {getAbstractFileByPath: () => null, getFiles: () => [], getResourcePath: file => `app://vault/${file.path}`};
+ const first = h.embed(a, `app://vault/${audioPath}?mtime=1`);
+ h.embed(a, "app://vault/plugin-generated.mp3");
+ void first.play();
+ for (const button of h.body.querySelectorAll(".pp-np-track-button")) assert.equal(button.disabled, true);
+});
+
+
+test("desktop recording label falls back to filename and metadata exposes artwork details", () => {
+ const h = setup(); const a = h.note("Source.md"); h.focus(a);
+ h.start(a, "app://vault/My%20recording.mp3");
+ assert.equal(h.body.querySelector(".pp-np-title").textContent, "My recording.mp3");
+ assert.equal(h.body.querySelector(".pp-track-card"), null);
+ h.plugin.ctrl.setMetadata({title: "Elderberry Wine", artist: "Wednesday", album: "Bleeds", artwork: [{src: "data:image/jpeg;base64,cover"}]});
+ assert.equal(h.body.querySelector(".pp-np-title").textContent, "Elderberry Wine");
+ assert.equal(h.body.querySelector(".pp-np-title").attributes.tabindex, "0");
+ assert.equal(h.body.querySelector(".pp-track-card").querySelector("img").src, "data:image/jpeg;base64,cover");
+ assert.deepEqual(h.body.querySelectorAll(".pp-track-detail").map(el => el.textContent), ["Wednesday", "Bleeds"]);
+ h.start(a, "app://vault/Other.mp3");
+ assert.equal(h.body.querySelector(".pp-track-card"), null);
+ assert.equal(h.body.querySelector(".pp-np-title").textContent, "Other.mp3");
+});
+
+
+for (const mobile of [false, true]) {
+ test(`sidebar focus keeps player attached to main pane (${mobile ? "mobile" : "desktop"})`, () => {
+  const h = setup(mobile); const source = h.note("Source.md"); h.focus(source);
+  const audio = h.start(source);
+  const sidebar = h.note("Sidebar.md"); sidebar.sidebar = true;
+  h.focus(sidebar); h.emit("layout-change");
+  assert.equal(audio.paused, false);
+  if (mobile) {
+   assert.equal(sidebar.view.containerEl.querySelector(".action"), null);
+   assert.ok(source.view.containerEl.querySelector(".action"));
+  } else {
+   assert.equal(sidebar.view.content.querySelector(".pp-now-playing"), null);
+   assert.ok(source.view.content.querySelector(".pp-now-playing"));
+   assert.equal(h.body.querySelector(".pp-np-source").hidden, true);
+   const other = h.note("Other.md"); h.focus(other); h.focus(sidebar);
+   assert.ok(other.view.content.querySelector(".pp-now-playing"));
+   assert.equal(h.body.querySelector(".pp-np-source").hidden, false);
+  }
  });
 }

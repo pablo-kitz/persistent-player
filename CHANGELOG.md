@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.0.4
+
+- Refine desktop playback into one row with equal-sized controls and metadata or filename labels.
+- Show artwork and recording details on title hover or keyboard focus.
+- Show an accent source-note icon only when viewing another note.
+- Remove the mobile player card background and add a labeled Stop action.
+- Deduplicate audio embeds and exclude non-audio files from track navigation.
+- Keep the player in the main workspace when a sidebar is focused.
+
+
 ## 1.0.3
 
 - Keep playback running across notes and show the playing source tab.
