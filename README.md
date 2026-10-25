@@ -9,7 +9,7 @@ No network requests, no telemetry. Everything runs locally inside the vault.
 Play any embedded audio file as you normally would. Instead of the inline embed, Persistent Player takes over playback with a now-playing bar at the top of the view:
 
 - **Play or pause** the currently loaded audio, from any open note.
-- **Click the source note's name** to return to the note where playback started.
+- **Click the source note's name**, between the speed and close controls, to return to the note where playback started. The name is hidden while viewing that note.
 - **Skip back or forward 5 seconds** for quick re-listening.
 - **Drag the progress track** to seek anywhere in the file.
 - **Click the speed label** to cycle through 0.5x, 0.75x, 1x, 1.25x, 1.5x, and 2x.

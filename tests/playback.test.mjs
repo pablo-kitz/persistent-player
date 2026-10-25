@@ -159,6 +159,7 @@ test("navigation to another audio note preserves playback and moves the controls
 	const a = h.note("Music/Source.md"), b = h.note("Other.md");
 	h.focus(a);
 	const audio = h.start(a);
+	assert.equal(h.body.querySelector(".pp-np-source").hidden, true);
 	audio.currentTime = 37;
 	audio.playbackRate = 1.5;
 	const untouched = h.embed(b, "app://vault/other.mp3");
@@ -171,6 +172,12 @@ test("navigation to another audio note preserves playback and moves the controls
 	assert.equal(untouched.src, "app://vault/other.mp3");
 	assert.equal(h.body.querySelectorAll(".pp-now-playing").length, 1);
 	assert.ok(b.view.content.querySelector(".pp-now-playing"));
+	const source = b.view.content.querySelector(".pp-np-source");
+	assert.equal(source.hidden, false);
+	assert.equal(source.parentElement.cls, "pp-np-right");
+	const controls = source.parentElement.children;
+	assert.equal(controls[controls.indexOf(source) - 1].cls, "clickable-icon pp-np-rate");
+	assert.equal(controls[controls.indexOf(source) + 1].cls, "clickable-icon pp-np-close");
 	assert.ok(a.tabHeaderEl.querySelector(".pp-tab-playing"));
 	assert.equal(b.tabHeaderEl.querySelector(".pp-tab-playing"), null);
 	b.view.content.querySelector(".pp-np-source").emit("click");
@@ -184,8 +191,12 @@ test("opening a file in the same leaf and closing the source do not pause playba
 	const audio = h.start(a);
 	a.view.file = { path: "Replacement.md" };
 	h.emit("file-open");
+	assert.equal(h.body.querySelector(".pp-np-source").hidden, false);
 	assert.equal(audio.paused, false);
 	assert.equal(h.body.querySelector(".pp-tab-playing"), null);
+	a.view.file = { path: "Source.md" };
+	h.emit("file-open");
+	assert.equal(h.body.querySelector(".pp-np-source").hidden, true);
 	const b = h.note("Destination.md");
 	h.focus(b);
 	h.leaves.splice(h.leaves.indexOf(a), 1);

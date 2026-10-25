@@ -143,17 +143,10 @@ class NowPlayingBar {
 		const view = this.app.workspace.getActiveViewOfType(MarkdownView);
 		const vc = view?.containerEl.querySelector(".view-content");
 		if (!this.ctrl.hasActive || !vc) { this.hide(); return; }
-		if (this.bar?.parentElement === vc) return;
+		if (this.bar?.parentElement === vc) { this.syncSource(); return; }
 
 		this.hide();
 		const bar = (this.bar = createDiv("pp-now-playing"));
-		this.sourceEl = bar.createEl("button", { cls: "pp-np-source" });
-		this.sourceEl.setAttribute("type", "button");
-		this.syncSource();
-		this.sourceEl.addEventListener("click", () => {
-			if (this.ctrl.notePath) void this.app.workspace.openLinkText(this.ctrl.notePath, "");
-		});
-
 		this.mkSkip(bar, "-5s", "Skip back 5 seconds", -5);
 		const play = (this.playBtn = bar.createDiv("clickable-icon pp-np-play"));
 		setIcon(play, this.ctrl.playing ? "pause" : "play");
@@ -176,6 +169,12 @@ class NowPlayingBar {
 		this.rateEl.setAttribute("aria-label", "Playback speed");
 		this.rateEl.setAttribute("title", "Playback speed");
 		this.rateEl.addEventListener("click", () => this.cycleRate());
+		this.sourceEl = right.createEl("button", { cls: "pp-np-source" });
+		this.sourceEl.setAttribute("type", "button");
+		this.syncSource();
+		this.sourceEl.addEventListener("click", () => {
+			if (this.ctrl.notePath) void this.app.workspace.openLinkText(this.ctrl.notePath, "");
+		});
 		const close = right.createDiv("clickable-icon pp-np-close");
 		setIcon(close, "x");
 		close.setAttribute("aria-label", "Close player");
@@ -197,6 +196,7 @@ class NowPlayingBar {
 	private syncSource() {
 		if (!this.sourceEl) return;
 		const path = this.ctrl.notePath;
+		this.sourceEl.hidden = this.app.workspace.getActiveViewOfType(MarkdownView)?.file?.path === path;
 		this.sourceEl.textContent = path.split("/").pop()?.replace(/\.md$/, "") || "Audio";
 		this.sourceEl.setAttribute("title", path ? `Open source note: ${path}` : "Audio");
 		this.sourceEl.setAttribute("aria-label", path ? `Open source note: ${path}` : "Audio");

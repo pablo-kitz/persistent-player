@@ -27,7 +27,7 @@
 
 .pp-now-playing .pp-np-source {
 	min-width: 0;
-	max-width: 25%;
+	max-width: min(25vw, 180px);
 	flex-shrink: 1;
 	height: auto;
 	padding: 2px 4px;
@@ -43,6 +43,7 @@
 }
 
 .pp-now-playing .pp-np-source:hover { color: var(--text-normal); }
+.pp-now-playing .pp-np-source[hidden] { display: none; }
 
 .pp-tab-playing {
 	display: inline-flex;
@@ -94,8 +95,11 @@
 	display: flex;
 	align-items: center;
 	gap: 2px;
-	flex-shrink: 0;
+	min-width: 0;
+	flex-shrink: 1;
 }
+
+.pp-np-time, .pp-np-rate, .pp-np-close { flex-shrink: 0; }
 
 .pp-np-time {
 	font-size: var(--font-ui-smaller);
