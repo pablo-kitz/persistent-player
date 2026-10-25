@@ -12,6 +12,18 @@ const { code } = transformSync(readFileSync(new URL("../src/main.ts", import.met
 // without a decoder, vault, or running Obsidian instance.
 function setup(mobile = false) {
 	const mediaListeners = new Map();
+ const menus = [];
+ const observers = [];
+ class MutationObserver {
+  constructor(callback) { this.callback = callback; observers.push(this); }
+  observe() {}
+  disconnect() { this.disconnected = true; }
+ }
+ class Menu {
+  constructor() { this.items = []; menus.push(this); }
+  addItem(cb) { const item = {setTitle(title) {this.title = title; return this;}, setChecked(checked) {this.checked = checked; return this;}, onClick(cb) {this.click = cb; return this;}}; cb(item); this.items.push(item); return this; }
+  showAtPosition(position) { this.position = position; }
+ }
 	class Element {
 		constructor(tag = "div", cls = "") {
 			this.tag = tag;
@@ -25,6 +37,9 @@ function setup(mobile = false) {
             this.classList = { add: cls => { this.cls += ` ${cls}`; } };
 		}
 		replaceChildren() { for (const child of [...this.children]) child.remove(); }
+        getBoundingClientRect() { return {left: 100, bottom: 32}; }
+        focus() { this.focused = true; }
+        get nextSibling() { return this.parentElement?.children[this.parentElement.children.indexOf(this) + 1] ?? null; }
         get firstChild() { return this.children[0] ?? null; }
 		hasClass(cls) { return this.cls.split(" ").includes(cls); }
 		matches(selector) { return selector.startsWith(".") ? this.hasClass(selector.slice(1)) : this.tag === selector; }
@@ -107,6 +122,7 @@ function setup(mobile = false) {
 			target.addEventListener(event, cb);
 			this.cleanups.push(() => target.removeEventListener(event, cb));
 		}
+		register(cleanup) { this.cleanups.push(cleanup); }
 		registerEvent(cleanup) { this.cleanups.push(cleanup); }
 		addCommand(command) { this.commands.set(command.id, command); }
 	}
@@ -138,9 +154,9 @@ function setup(mobile = false) {
 	};
 	const module = { exports: {} };
 	runInNewContext(code, {
-		module, exports: module.exports, document, HTMLAudioElement: Audio,
+		module, exports: module.exports, MutationObserver, document, HTMLAudioElement: Audio,
 		createDiv: cls => new Element("div", cls),
-		require: () => ({ MarkdownView, ItemView: MarkdownView, Platform: {isMobile: mobile}, Modal, TFile: class {}, Plugin, setIcon: (el, icon) => { el.icon = icon; } }),
+		require: () => ({ MarkdownView, ItemView: MarkdownView, Platform: {isMobile: mobile}, Modal, Menu, TFile: class {}, Plugin, setIcon: (el, icon) => { el.icon = icon; } }),
 	});
 	const plugin = new module.exports.default({ workspace });
 	plugin.onload();
@@ -166,7 +182,7 @@ function setup(mobile = false) {
 		return body.querySelectorAll(".pp-pooled").find(audio => !audio.paused);
 	}
 	function command(id) { assert.equal(plugin.commands.get(id).checkCallback(false), true); }
-	return { body, workspace, plugin, leaves, note, focus, emit, embed, start, command };
+	return { observers, menus, body, workspace, plugin, leaves, note, focus, emit, embed, start, command };
 }
 
 test("navigation to another audio note preserves playback and moves the controls", () => {
@@ -189,8 +205,8 @@ test("navigation to another audio note preserves playback and moves the controls
 	assert.ok(b.view.content.querySelector(".pp-now-playing"));
 	const source = b.view.content.querySelector(".pp-np-source");
 	assert.equal(source.hidden, false);
-	assert.equal(source.parentElement.cls, "pp-now-playing");
-	assert.equal(source.icon, "file-up-right");
+	assert.equal(source.parentElement.cls, "pp-np-right");
+	assert.equal(source.icon, "file");
 	assert.ok(a.tabHeaderEl.querySelector(".pp-tab-playing"));
 	assert.equal(b.tabHeaderEl.querySelector(".pp-tab-playing"), null);
 	b.view.content.querySelector(".pp-np-source").emit("click");
@@ -356,7 +372,7 @@ for (const mobile of [false, true]) {
    "Previous audio", "Skip back 5 seconds", "Play or pause", "Skip forward 5 seconds", "Next audio",
   ] : ["Previous audio", "Play or pause", "Next audio"]);
   if (!mobile) assert.deepEqual(bar.querySelector(".pp-np-right").children.map(el => el.attributes["aria-label"]),
-   [undefined, "Skip back 5 seconds", "Playback speed", "Skip forward 5 seconds", "Close player"]);
+   [undefined, "Skip back 5 seconds", "Playback speed", "Skip forward 5 seconds", "Open source note: Playlist.md", "Close player"]);
  });
 }
 
@@ -422,5 +438,56 @@ for (const mobile of [false, true]) {
    assert.ok(other.view.content.querySelector(".pp-now-playing"));
    assert.equal(h.body.querySelector(".pp-np-source").hidden, false);
   }
+ });
+}
+
+
+test("speed opens a checked selection menu and source icon precedes close", () => {
+ const h = setup(); const source = h.note("Source.md"); h.focus(source); h.start(source);
+ const other = h.note("Other.md"); h.focus(other);
+ const icon = h.body.querySelector(".pp-np-source");
+ assert.equal(icon.icon, "file");
+ assert.equal(icon.querySelector(".pp-source-arrow").icon, "arrow-up-right");
+ const siblings = icon.parentElement.children;
+ assert.equal(siblings[siblings.indexOf(icon) + 1].hasClass("pp-np-close"), true);
+ const speed = h.body.querySelector(".pp-np-rate");
+ speed.emit("click");
+ assert.equal(speed.textContent, "1x");
+ const menu = h.menus[0];
+ assert.deepEqual(menu.items.map(item => item.title), ["0.5×", "0.75×", "1×", "1.25×", "1.5×", "2×"]);
+ assert.equal(menu.items[2].checked, true);
+ menu.items[4].click();
+ assert.equal(speed.textContent, "1.5x");
+});
+
+
+for (const mobile of [false, true]) {
+ test(`native embed ownership tracks pause, rerender, switching, and quit (${mobile ? "mobile" : "desktop"})`, () => {
+  const h = setup(mobile); const a = h.note("Source.md"); h.focus(a);
+  const first = h.embed(a, "app://vault/first.mp3");
+  const second = h.embed(a, "app://vault/second.mp3");
+  void first.play();
+  const label = () => h.body.querySelector(".pp-embed-label");
+  assert.equal(label().textContent, "Playing in Persistent Player");
+  assert.equal(first.nextSibling.hasClass("pp-embed-status"), true);
+  assert.equal(first.src, "app://vault/first.mp3");
+  h.command("toggle-playback");
+  assert.equal(label().textContent, "Paused in Persistent Player");
+  h.body.querySelector(".pp-embed-open").emit("click");
+  assert.ok(h.body.querySelector(".pp-np-play").focused);
+  h.command("toggle-playback");
+  first.remove(); h.observers[0].callback();
+  assert.equal(label(), null);
+  const rerender = h.embed(a, "app://vault/first.mp3?mtime=2"); h.observers[0].callback();
+  assert.equal(rerender.nextSibling.hasClass("pp-embed-status"), true);
+  h.plugin.ctrl.skipTrack(1);
+  assert.equal(second.nextSibling.hasClass("pp-embed-status"), true);
+  assert.equal(h.body.querySelectorAll(".pp-embed-status").length, 1);
+  h.body.querySelector(".pp-np-close").emit("click");
+  assert.equal(label(), null);
+  assert.equal(second.src, "app://vault/second.mp3");
+  void second.play(); h.plugin.onunload();
+  assert.equal(label(), null);
+  assert.equal(h.observers[0].disconnected, true);
  });
 }

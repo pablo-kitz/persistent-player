@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.0.5
+
+- Restore the desktop bar to 32px with equal 28px buttons.
+- Fix the source-note icon and move it immediately before the close button.
+- Position the metadata card below the player bar.
+- Replace playback-speed cycling with a checked selection menu.
+- Show playing/paused ownership status below native audio embeds with an Open player action.
+- Keep embed status synchronized across track changes, note rerenders, and plugin cleanup.
+
+
 ## 1.0.4
 
 - Refine desktop playback into one row with equal-sized controls and metadata or filename labels.

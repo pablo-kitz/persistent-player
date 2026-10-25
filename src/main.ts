@@ -1,4 +1,4 @@
-import { App, MarkdownView, Modal, Platform, Plugin, setIcon, WorkspaceLeaf, ItemView, TFile } from "obsidian";
+import { App, MarkdownView, Menu, Modal, Platform, Plugin, setIcon, WorkspaceLeaf, ItemView, TFile } from "obsidian";
 
 // -- Types -------------------------------------------------------------------
 
@@ -167,6 +167,18 @@ class NowPlayingBar {
 		plugin.registerDomEvent(document, "pointerup", () => { this.dragging = false; });
 	}
 
+	openPlayer() {
+		if (Platform.isMobile && !this.panel && this.ctrl.hasActive) {
+			const panel = new Modal(this.app);
+			this.panel = panel;
+			panel.modalEl.classList.add("pp-player-modal");
+			panel.onClose = () => { this.panel = null; this.show(); };
+			panel.open();
+		}
+		this.show();
+		this.playBtn?.focus();
+	}
+
 	private mainView(): ItemView | null {
 		// Restrict recency to the central workspace; sidebar focus must not
 		// relocate the player or change whether its source-note link is shown.
@@ -179,14 +191,7 @@ class NowPlayingBar {
 		if (Platform.isMobile && !this.panel) {
 			this.hide();
 			if (view && this.ctrl.hasActive) {
-				this.mobileActions = [view.addAction("music", "Open player", () => {
-					const panel = new Modal(this.app);
-					this.panel = panel;
-					panel.modalEl.classList.add("pp-player-modal");
-					panel.onClose = () => { this.panel = null; this.show(); };
-					panel.open();
-					this.show();
-				})];
+				this.mobileActions = [view.addAction("music", "Open player", () => this.openPlayer())];
 			}
 			return;
 		}
@@ -206,6 +211,7 @@ class NowPlayingBar {
 		const play = (this.playBtn = bar.createDiv("clickable-icon pp-np-play"));
 		setIcon(play, this.ctrl.playing ? "pause" : "play");
 		play.setAttribute("aria-label", "Play or pause");
+		play.setAttribute("tabindex", "0");
 		play.setAttribute("title", "Play or pause");
 		play.addEventListener("click", () => this.ctrl.toggle());
 		if (Platform.isMobile) this.mkSkip(bar, "+5s", "Skip forward 5 seconds", 5);
@@ -224,15 +230,15 @@ class NowPlayingBar {
 		this.timeEl = right.createSpan({ cls: "pp-np-time" });
 		this.syncProgress();
 		if (!Platform.isMobile) this.mkSkip(right, "-5s", "Skip back 5 seconds", -5);
-		this.rateEl = right.createDiv("clickable-icon pp-np-rate");
+		this.rateEl = right.createEl("button", { cls: "clickable-icon pp-np-rate" });
 		this.rateEl.textContent = `${this.ctrl.playbackRate}x`;
 		this.rateEl.setAttribute("aria-label", "Playback speed");
 		this.rateEl.setAttribute("title", "Playback speed");
-		this.rateEl.addEventListener("click", () => this.cycleRate());
+		this.rateEl.setAttribute("aria-haspopup", "menu");
+		this.rateEl.addEventListener("click", () => this.openRateMenu());
 		if (!Platform.isMobile) this.mkSkip(right, "+5s", "Skip forward 5 seconds", 5);
-		this.sourceEl = (Platform.isMobile ? right : bar).createEl("button", { cls: "pp-np-source" });
+		this.sourceEl = right.createEl("button", { cls: "pp-np-source" });
 		this.sourceEl.setAttribute("type", "button");
-		if (!Platform.isMobile) bar.insertBefore(this.sourceEl, center);
 		this.syncSource();
 		this.sourceEl.addEventListener("click", () => {
 			if (this.ctrl.notePath) void this.app.workspace.openLinkText(this.ctrl.notePath, "");
@@ -324,7 +330,9 @@ class NowPlayingBar {
 		const path = this.ctrl.notePath;
 		const view = this.mainView();
 		this.sourceEl.hidden = view instanceof MarkdownView && view.file?.path === path;
-		setIcon(this.sourceEl, "file-up-right");
+		setIcon(this.sourceEl, "file");
+		const arrow = this.sourceEl.createSpan({ cls: "pp-source-arrow" });
+		setIcon(arrow, "arrow-up-right");
 		this.sourceEl.setAttribute("title", path ? `Open source note: ${path}` : "Audio");
 		this.sourceEl.setAttribute("aria-label", path ? `Open source note: ${path}` : "Audio");
 	}
@@ -357,11 +365,16 @@ class NowPlayingBar {
 		if (d) this.ctrl.seek(ratio * d);
 	}
 
-	private cycleRate() {
-		const rates = [0.5, 0.75, 1, 1.25, 1.5, 2];
-		const i = rates.indexOf(this.ctrl.playbackRate);
-		const next = rates[(i + 1) % rates.length] ?? 1;
-		this.ctrl.setRate(next);
+	private openRateMenu() {
+		if (!this.rateEl) return;
+		const menu = new Menu();
+		for (const rate of [0.5, 0.75, 1, 1.25, 1.5, 2]) {
+			menu.addItem(item => item.setTitle(`${rate}×`)
+				.setChecked(this.ctrl.playbackRate === rate)
+				.onClick(() => this.ctrl.setRate(rate)));
+		}
+		const bounds = this.rateEl.getBoundingClientRect();
+		menu.showAtPosition({ x: bounds.left, y: bounds.bottom + 4 });
 	}
 
 	destroy() { const panel = this.panel; if (panel) { panel.onClose = () => {}; panel.close(); } this.panel = null; this.hide(); }
@@ -405,6 +418,70 @@ class PlayingTabIndicator {
 	}
 }
 
+// Shows ownership beside native embeds without touching their controls.
+class EmbedPlaybackIndicator {
+	private indicators = new Map<HTMLAudioElement, { row: HTMLElement; label: HTMLElement }>();
+	private observer: MutationObserver;
+	private destroyed = false;
+
+	constructor(private ctrl: Controller, private app: App, private bar: NowPlayingBar, plugin: Plugin) {
+		for (const event of ["play", "pause", "change"] as const) ctrl.on(event, () => this.sync());
+		this.observer = new MutationObserver(() => this.sync());
+		this.observer.observe(document.body, { childList: true, subtree: true });
+		plugin.register(() => this.destroy());
+	}
+
+	sync() {
+		if (this.destroyed) return;
+		const matches = new Set<HTMLAudioElement>();
+		if (this.ctrl.active) {
+			const source = audioSourceKey(this.ctrl.active.src);
+			for (const leaf of this.app.workspace.getLeavesOfType("markdown")) {
+				if (!(leaf.view instanceof MarkdownView) || leaf.view.file?.path !== this.ctrl.notePath) continue;
+				for (const audio of leaf.view.containerEl.querySelectorAll("audio")) {
+					if (!audio.hasClass("pp-pooled") && audioSourceKey(audio.src || audio.currentSrc) === source) matches.add(audio);
+				}
+			}
+		}
+		for (const [audio, indicator] of this.indicators) {
+			if (!matches.has(audio) || indicator.row.parentElement !== audio.parentElement) {
+				indicator.row.remove();
+				this.indicators.delete(audio);
+			}
+		}
+		for (const audio of matches) {
+			let indicator = this.indicators.get(audio);
+			if (!indicator && audio.parentElement) {
+				const row = createDiv("pp-embed-status");
+				row.createSpan({ cls: "pp-embed-dot" });
+				const label = row.createSpan({ cls: "pp-embed-label" });
+				label.setAttribute("role", "status");
+				const open = row.createEl("button", { text: "Open player", cls: "pp-embed-open" });
+				open.setAttribute("type", "button");
+				const icon = open.createSpan({ cls: "pp-embed-open-icon" });
+				setIcon(icon, "arrow-up-right");
+				open.addEventListener("click", () => this.bar.openPlayer());
+				audio.parentElement.insertBefore(row, audio.nextSibling);
+				indicator = { row, label };
+				this.indicators.set(audio, indicator);
+			}
+			if (indicator) {
+				const state = this.ctrl.playing ? "Playing" : "Paused";
+				const text = `${state} in Persistent Player`;
+				if (indicator.label.textContent !== text) indicator.label.textContent = text;
+				indicator.row.setAttribute("data-state", state.toLowerCase());
+			}
+		}
+	}
+
+	destroy() {
+		this.destroyed = true;
+		this.observer.disconnect();
+		for (const indicator of this.indicators.values()) indicator.row.remove();
+		this.indicators.clear();
+	}
+}
+
 // -- Plugin ------------------------------------------------------------------
 
 export default class PersistentPlayerPlugin extends Plugin {
@@ -412,12 +489,14 @@ export default class PersistentPlayerPlugin extends Plugin {
 	private bar!: NowPlayingBar;
 	private tabs!: PlayingTabIndicator;
 	private media!: SystemMedia;
+	private embeds!: EmbedPlaybackIndicator;
 
 	onload() {
 		this.ctrl = new Controller();
 		this.media = new SystemMedia(this.ctrl, this.app);
 		this.bar = new NowPlayingBar(this.ctrl, this.app, this);
 		this.tabs = new PlayingTabIndicator(this.ctrl, this.app);
+		this.embeds = new EmbedPlaybackIndicator(this.ctrl, this.app, this.bar, this);
 
 		this.registerDomEvent(document, "play", (e: Event) => {
 			const t = e.target;
@@ -452,7 +531,7 @@ export default class PersistentPlayerPlugin extends Plugin {
 			this.ctrl.loadAndPlay(src, note, sources);
 		}, true);
 
-		const syncWorkspace = () => { this.bar.show(); this.tabs.sync(); };
+		const syncWorkspace = () => { this.bar.show(); this.tabs.sync(); this.embeds.sync(); };
 		this.registerEvent(this.app.workspace.on("active-leaf-change", syncWorkspace));
 		this.registerEvent(this.app.workspace.on("file-open", syncWorkspace));
 		this.registerEvent(this.app.workspace.on("layout-change", syncWorkspace));
@@ -505,6 +584,7 @@ export default class PersistentPlayerPlugin extends Plugin {
 	}
 
 	onunload() {
+		this.embeds?.destroy();
 		this.media?.destroy();
 		this.ctrl?.destroy();
 		this.bar?.destroy();
