@@ -206,7 +206,7 @@ test("navigation to another audio note preserves playback and moves the controls
 	const source = b.view.content.querySelector(".pp-np-source");
 	assert.equal(source.hidden, false);
 	assert.equal(source.parentElement.cls, "pp-np-right");
-	assert.equal(source.icon, "file");
+	assert.equal(source.icon, "external-link");
 	assert.ok(a.tabHeaderEl.querySelector(".pp-tab-playing"));
 	assert.equal(b.tabHeaderEl.querySelector(".pp-tab-playing"), null);
 	b.view.content.querySelector(".pp-np-source").emit("click");
@@ -367,7 +367,7 @@ for (const mobile of [false, true]) {
   h.embed(a, "app://vault/second.mp3"); void first.play();
   if (mobile) h.body.querySelector(".action").emit("click");
   const bar = h.body.querySelector(".pp-now-playing");
-  const controls = bar.children.filter(el => el.hasClass("clickable-icon"));
+  const controls = bar.children.filter(el => el.hasClass("clickable-icon") && !el.hasClass("pp-np-source"));
   assert.deepEqual(controls.map(el => el.attributes["aria-label"]), mobile ? [
    "Previous audio", "Skip back 5 seconds", "Play or pause", "Skip forward 5 seconds", "Next audio",
   ] : ["Previous audio", "Play or pause", "Next audio"]);
@@ -446,15 +446,15 @@ test("speed opens a checked selection menu and source icon precedes close", () =
  const h = setup(); const source = h.note("Source.md"); h.focus(source); h.start(source);
  const other = h.note("Other.md"); h.focus(other);
  const icon = h.body.querySelector(".pp-np-source");
- assert.equal(icon.icon, "file");
- assert.equal(icon.querySelector(".pp-source-arrow").icon, "arrow-up-right");
+ assert.equal(icon.icon, "external-link");
+ assert.equal(icon.querySelector(".pp-source-arrow"), null);
  const siblings = icon.parentElement.children;
  assert.equal(siblings[siblings.indexOf(icon) + 1].hasClass("pp-np-close"), true);
  const speed = h.body.querySelector(".pp-np-rate");
  speed.emit("click");
  assert.equal(speed.textContent, "1x");
  const menu = h.menus[0];
- assert.deepEqual(menu.items.map(item => item.title), ["0.5×", "0.75×", "1×", "1.25×", "1.5×", "2×"]);
+ assert.deepEqual(menu.items.map(item => item.title), ["0.5Ã—", "0.75Ã—", "1Ã—", "1.25Ã—", "1.5Ã—", "2Ã—"]);
  assert.equal(menu.items[2].checked, true);
  menu.items[4].click();
  assert.equal(speed.textContent, "1.5x");

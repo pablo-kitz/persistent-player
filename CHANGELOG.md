@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.0.6
+
+- Fix corrupted playback-speed menu labels with plain x suffixes.
+- Replace the composite source-note icon with the built-in external-link icon.
+- Restore tidy 14px desktop icons and compact interface text inside equal 28px buttons.
+
+
 ## 1.0.5
 
 - Restore the desktop bar to 32px with equal 28px buttons.

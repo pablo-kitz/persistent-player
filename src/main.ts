@@ -237,7 +237,7 @@ class NowPlayingBar {
 		this.rateEl.setAttribute("aria-haspopup", "menu");
 		this.rateEl.addEventListener("click", () => this.openRateMenu());
 		if (!Platform.isMobile) this.mkSkip(right, "+5s", "Skip forward 5 seconds", 5);
-		this.sourceEl = right.createEl("button", { cls: "pp-np-source" });
+		this.sourceEl = right.createEl("button", { cls: "clickable-icon pp-np-source" });
 		this.sourceEl.setAttribute("type", "button");
 		this.syncSource();
 		this.sourceEl.addEventListener("click", () => {
@@ -330,9 +330,7 @@ class NowPlayingBar {
 		const path = this.ctrl.notePath;
 		const view = this.mainView();
 		this.sourceEl.hidden = view instanceof MarkdownView && view.file?.path === path;
-		setIcon(this.sourceEl, "file");
-		const arrow = this.sourceEl.createSpan({ cls: "pp-source-arrow" });
-		setIcon(arrow, "arrow-up-right");
+		setIcon(this.sourceEl, "external-link");
 		this.sourceEl.setAttribute("title", path ? `Open source note: ${path}` : "Audio");
 		this.sourceEl.setAttribute("aria-label", path ? `Open source note: ${path}` : "Audio");
 	}
@@ -369,7 +367,7 @@ class NowPlayingBar {
 		if (!this.rateEl) return;
 		const menu = new Menu();
 		for (const rate of [0.5, 0.75, 1, 1.25, 1.5, 2]) {
-			menu.addItem(item => item.setTitle(`${rate}×`)
+			menu.addItem(item => item.setTitle(`${rate}Ã—`)
 				.setChecked(this.ctrl.playbackRate === rate)
 				.onClick(() => this.ctrl.setRate(rate)));
 		}
