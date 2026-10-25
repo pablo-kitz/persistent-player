@@ -125,3 +125,14 @@
 .pp-np-close svg { width: 14px; height: 14px; }
 
 .pp-now-playing:hover .pp-np-close { opacity: 1; }
+
+.is-mobile .pp-now-playing {
+ height: auto;
+ min-height: 88px;
+ flex-wrap: wrap;
+ padding: 12px max(12px, env(safe-area-inset-right)) 12px max(12px, env(safe-area-inset-left));
+}
+.is-mobile .pp-now-playing .clickable-icon { min-width: 44px; min-height: 44px; }
+.is-mobile .pp-np-close { opacity: 1; }
+.is-mobile .pp-np-center { min-width: 100%; touch-action: none; padding: 18px 0; }
+.is-mobile .pp-np-right { flex: 1; }

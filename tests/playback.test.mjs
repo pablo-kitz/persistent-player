@@ -125,7 +125,7 @@ function setup() {
 	runInNewContext(code, {
 		module, exports: module.exports, document, HTMLAudioElement: Audio,
 		createDiv: cls => new Element("div", cls),
-		require: () => ({ MarkdownView, Plugin, setIcon: (el, icon) => { el.icon = icon; } }),
+		require: () => ({ MarkdownView, ItemView: MarkdownView, Platform: {isMobile: false}, Plugin, setIcon: (el, icon) => { el.icon = icon; } }),
 	});
 	const plugin = new module.exports.default({ workspace });
 	plugin.onload();

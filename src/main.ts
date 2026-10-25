@@ -1,4 +1,4 @@
-import { App, MarkdownView, Plugin, setIcon, WorkspaceLeaf } from "obsidian";
+import { App, MarkdownView, Modal, Platform, Plugin, setIcon, WorkspaceLeaf, ItemView, TFile } from "obsidian";
 
 // -- Types -------------------------------------------------------------------
 
@@ -127,6 +127,8 @@ class NowPlayingBar {
 	private rateEl: HTMLElement | null = null;
 	private sourceEl: HTMLElement | null = null;
 	private dragging = false;
+	private mobileActions: HTMLElement[] = [];
+	private panel: Modal | null = null;
 
 	constructor(private ctrl: Controller, private app: App, plugin: Plugin) {
 		ctrl.on("play", () => { this.show(); this.syncIcon(); });
@@ -135,13 +137,27 @@ class NowPlayingBar {
 		ctrl.on("timeupdate", () => this.syncProgress());
 		ctrl.on("ratechange", () => { if (this.rateEl) this.rateEl.textContent = `${this.ctrl.playbackRate}x`; });
 
-		plugin.registerDomEvent(document, "mousemove", (e) => { if (this.dragging) this.seekTo(e.clientX); });
-		plugin.registerDomEvent(document, "mouseup", () => { this.dragging = false; });
+		plugin.registerDomEvent(document, "pointermove", (e) => { if (this.dragging) this.seekTo(e.clientX); });
+		plugin.registerDomEvent(document, "pointerup", () => { this.dragging = false; });
 	}
 
 	show() {
-		const view = this.app.workspace.getActiveViewOfType(MarkdownView);
-		const vc = view?.containerEl.querySelector(".view-content");
+		const view = this.app.workspace.getActiveViewOfType(ItemView);
+		if (Platform.isMobile && !this.panel) {
+			this.hide();
+			if (view && this.ctrl.hasActive) {
+				this.playBtn = view.addAction(this.ctrl.playing ? "pause" : "play", "Play or pause", () => this.ctrl.toggle());
+				this.mobileActions = [this.playBtn, view.addAction("sliders-horizontal", "Open player", () => {
+					const panel = new Modal(this.app);
+					this.panel = panel;
+					panel.onClose = () => { this.panel = null; this.show(); };
+					panel.open();
+					this.show();
+				})];
+			}
+			return;
+		}
+		const vc = this.panel?.contentEl ?? view?.containerEl.querySelector(".view-content");
 		if (!this.ctrl.hasActive || !vc) { this.hide(); return; }
 		if (this.bar?.parentElement === vc) { this.syncSource(); return; }
 
@@ -159,7 +175,7 @@ class NowPlayingBar {
 		this.track = center.createDiv("pp-np-track");
 		this.fill = this.track.createDiv("pp-np-fill");
 		this.syncProgress();
-		center.addEventListener("mousedown", (e) => { this.dragging = true; this.seekTo(e.clientX); });
+		center.addEventListener("pointerdown", (e) => { this.dragging = true; this.seekTo(e.clientX); });
 
 		const right = bar.createDiv("pp-np-right");
 		this.timeEl = right.createSpan({ cls: "pp-np-time" });
@@ -188,6 +204,8 @@ class NowPlayingBar {
 	}
 
 	hide() {
+		this.mobileActions.forEach(el => el.remove());
+		this.mobileActions = [];
 		this.bar?.remove();
 		this.bar = this.playBtn = this.track = this.fill = this.timeEl = this.rateEl = this.sourceEl = null;
 		this.dragging = false;
@@ -237,7 +255,7 @@ class NowPlayingBar {
 		this.ctrl.setRate(next);
 	}
 
-	destroy() { this.hide(); }
+	destroy() { const panel = this.panel; if (panel) { panel.onClose = () => {}; panel.close(); } this.panel = null; this.hide(); }
 }
 
 // -- Playing Tab Indicator ---------------------------------------------------
@@ -284,9 +302,11 @@ export default class PersistentPlayerPlugin extends Plugin {
 	private ctrl!: Controller;
 	private bar!: NowPlayingBar;
 	private tabs!: PlayingTabIndicator;
+	private media!: SystemMedia;
 
 	onload() {
 		this.ctrl = new Controller();
+		this.media = new SystemMedia(this.ctrl, this.app);
 		this.bar = new NowPlayingBar(this.ctrl, this.app, this);
 		this.tabs = new PlayingTabIndicator(this.ctrl, this.app);
 
@@ -365,6 +385,7 @@ export default class PersistentPlayerPlugin extends Plugin {
 	}
 
 	onunload() {
+		this.media?.destroy();
 		this.ctrl?.destroy();
 		this.bar?.destroy();
 		this.tabs?.destroy();
@@ -376,4 +397,77 @@ function fmt(sec: number): string {
 	const m = Math.floor(sec / 60);
 	const s = Math.floor(sec % 60);
 	return `${m}:${s.toString().padStart(2, "0")}`;
+}
+
+// Metadata always follows the playing source, never the currently viewed note.
+class SystemMedia {
+ private revision = 0;
+ private artworkUrl: string | null = null;
+ private session = typeof navigator !== "undefined" ? navigator.mediaSession : undefined;
+ private actions: MediaSessionAction[] = [];
+ constructor(private ctrl: Controller, private app: App) {
+  if (!this.session) return;
+  const handlers: Partial<Record<MediaSessionAction, MediaSessionActionHandler>> = {
+   play: () => ctrl.play(), pause: () => ctrl.pause(),
+   seekbackward: d => ctrl.seekBy(-(d.seekOffset ?? 5)),
+   seekforward: d => ctrl.seekBy(d.seekOffset ?? 5),
+   seekto: d => { if (d.seekTime !== undefined) ctrl.seek(d.seekTime); },
+   stop: () => ctrl.clearNote(ctrl.notePath),
+  };
+  for (const action of Object.keys(handlers) as MediaSessionAction[]) {
+   try { this.session.setActionHandler(action, handlers[action]!); this.actions.push(action); } catch { /* Unsupported host action. */ }
+  }
+  ctrl.on("change", () => { void this.metadata(); });
+  for (const event of ["play", "pause", "timeupdate", "ratechange"] as const) ctrl.on(event, () => this.sync());
+ }
+ private sync() {
+  if (!this.session) return;
+  this.session.playbackState = this.ctrl.hasActive ? (this.ctrl.playing ? "playing" : "paused") : "none";
+  const duration = this.ctrl.duration();
+  try {
+   if (Number.isFinite(duration) && duration > 0) this.session.setPositionState({duration, playbackRate: this.ctrl.playbackRate, position: Math.max(0, Math.min(duration, this.ctrl.currentTime))});
+   else this.session.setPositionState();
+  } catch { /* Older embedded browsers may not support position state. */ }
+ }
+ private async metadata() {
+  const revision = ++this.revision;
+  if (!this.session) return;
+  if (this.artworkUrl) URL.revokeObjectURL(this.artworkUrl);
+  this.artworkUrl = null;
+  this.session.metadata = null;
+  this.sync();
+  if (!this.ctrl.active) return;
+  const file = this.app.vault.getAbstractFileByPath(this.ctrl.notePath);
+  const props = file instanceof TFile ? this.app.metadataCache.getFileCache(file)?.frontmatter : undefined;
+  const text = (key: string) => typeof props?.[key] === "string" ? props[key] : "";
+  const metadata: MediaMetadataInit = {title: text("title") || file?.name.replace(/\.md$/, "") || "Audio", artist: text("artist"), album: text("album")};
+  this.session.metadata = new MediaMetadata(metadata);
+  try {
+   const { parseBlob } = await import("music-metadata");
+   // Vault resource URLs require the webview loader, not an HTTP request.
+   // eslint-disable-next-line no-restricted-globals
+   const response = await fetch(this.ctrl.active.src);
+   if (!response.ok) return;
+   const tags = (await parseBlob(await response.blob(), {skipCovers: false})).common;
+   if (revision !== this.revision) return;
+   metadata.title = text("title") || tags.title || metadata.title;
+   metadata.artist = text("artist") || tags.artist || "";
+   metadata.album = text("album") || tags.album || "";
+   const picture = tags.picture?.[0];
+   if (picture) {
+    this.artworkUrl = URL.createObjectURL(new Blob([new Uint8Array(picture.data)], {type: picture.format}));
+    metadata.artwork = [{src: this.artworkUrl, type: picture.format}];
+   }
+   this.session.metadata = new MediaMetadata(metadata);
+  } catch { /* Unavailable tags must never interrupt playback. */ }
+ }
+ destroy() {
+  ++this.revision;
+  if (this.artworkUrl) URL.revokeObjectURL(this.artworkUrl);
+  if (!this.session) return;
+  for (const action of this.actions) this.session.setActionHandler(action, null);
+  this.session.metadata = null;
+  this.session.playbackState = "none";
+  try { this.session.setPositionState(); } catch { /* Unsupported host. */ }
+ }
 }
