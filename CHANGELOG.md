@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.0.7
+
+- Add a shared playback queue and embed controls.
+- Use rewind and fast-forward icons for the transport buttons.
+- Restart the current audio with a single back tap; double tap to nudge back or forward 5 seconds.
+- Disable the forward button when there is no next audio.
+- Show floating, fading −5 / +5 feedback on double taps, with reduced-motion support.
+
 ## 1.0.6
 
 - Fix corrupted playback-speed menu labels with plain x suffixes.
