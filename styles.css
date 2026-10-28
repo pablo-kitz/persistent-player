@@ -244,11 +244,6 @@
 .pp-queue-transport { display: flex; gap: 4px; align-items: center; margin-top: 8px; }
 
 .pp-queue-transport .pp-np-time { font-size: 10px; padding: 0; }
-.is-mobile .pp-queue-playing .pp-recording { position: relative; height: calc(228px - 180px * var(--pp-collapse, 0)); display: block; }
-.is-mobile .pp-queue-playing .pp-cover-small { position: absolute; top: 0; left: calc((50% - 90px) * (1 - var(--pp-collapse, 0))); width: calc(180px - 132px * var(--pp-collapse, 0)); height: calc(180px - 132px * var(--pp-collapse, 0)); }
-.is-mobile .pp-queue-playing .pp-recording-text { position: absolute; top: calc(180px * (1 - var(--pp-collapse, 0))); left: calc(60px * var(--pp-collapse, 0)); right: 0; }
-.is-mobile .pp-collapse-spacer { height: calc(180px * var(--pp-collapse, 0)); }
-@media (hover: none) { .pp-cover-small .pp-cover-play { opacity: 1; background: rgba(0,0,0,.25); } }
 @media (prefers-reduced-motion: reduce) { .pp-cover-small .pp-cover-play { transition: none; } }
 
 /* Keep icon controls unboxed; accessible names do not need native titles. */
@@ -289,3 +284,29 @@ button.pp-button[hidden] { display: none; }
 /* Artwork overlay is the sole visual variant of the same button. */
 .pp-cover-small button.pp-cover-play { width: 100%; height: 100%; background: rgba(0,0,0,.45); color: white; }
 .is-mobile button.pp-np-close { width: auto; gap: 6px; }
+/* One mobile player/queue sheet, with fixed scroll geometry. */
+.is-mobile .pp-mobile-player { width: min(440px, calc(100vw - 24px)); }
+.is-mobile .pp-mobile-player .modal-content { height: min(76dvh, 720px); max-height: 76dvh; padding: 0 16px 16px; overflow-y: auto; overflow-anchor: none; }
+.is-mobile .pp-queue-playing { top: -180px; padding-top: 0; background: var(--modal-background, var(--background-primary)); }
+.is-mobile .pp-queue-playing .pp-recording { position: relative; height: 228px; display: block; }
+.is-mobile .pp-queue-playing .pp-cover-small { position: absolute; top: 0; left: calc((50% - 90px) * (1 - var(--pp-collapse, 0))); width: 180px; height: 180px; transform-origin: top left; transform: translateY(calc(180px * var(--pp-collapse, 0))) scale(calc(1 - .733333 * var(--pp-collapse, 0))); will-change: transform; }
+.is-mobile .pp-queue-playing .pp-recording-text { position: absolute; top: 180px; left: 0; right: 60px; transform: translateX(calc(60px * var(--pp-collapse, 0))); will-change: transform; }
+.is-mobile .pp-queue-transport { display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px 8px; }
+.is-mobile .pp-queue-transport > .pp-button { justify-self: center; }
+.is-mobile .pp-queue-transport .pp-np-center { grid-column: 1 / -1; width: 100%; padding: 16px 0; }
+.is-mobile .pp-queue-transport .pp-np-time { justify-self: start; font-size: var(--font-ui-small); }
+.is-mobile button.pp-button { width: 48px; height: 48px; min-width: 48px; min-height: 48px; }
+.is-mobile button.pp-button svg { width: 24px; height: 24px; }
+.is-mobile .pp-queue-transport button.pp-np-play svg { width: 32px; height: 32px; }
+@media (hover: none) {
+ .pp-cover-small .pp-cover-play, .pp-cover-small:hover .pp-cover-play { opacity: 0; }
+ .pp-cover-small .pp-cover-play:active, .pp-cover-small .pp-cover-play:focus-visible { opacity: 1; }
+}
+
+.is-mobile .pp-queue-row > .pp-recording { touch-action: pan-y; -webkit-user-select: none; user-select: none; }
+
+/* Quiet empty state, sized like the rest of the sidebar UI. */
+.pp-queue-playing[hidden] { display: none; }
+.pp-queue-empty { padding: 24px 4px; max-width: 28em; }
+.pp-queue-empty-title { color: var(--text-muted); font-size: var(--font-ui-small); font-weight: var(--font-medium); line-height: 1.4; }
+.pp-queue-empty-hint { margin-top: 6px; color: var(--text-faint); font-size: var(--font-ui-smaller); line-height: 1.5; }

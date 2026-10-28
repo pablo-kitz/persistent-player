@@ -349,8 +349,11 @@ test("mobile exposes one music action and opens the album-art player", () => {
  let actions = h.body.querySelectorAll(".action");
  assert.equal(actions.length, 1); assert.equal(actions[0].icon, "music");
  actions[0].emit("click");
- assert.ok(h.body.querySelector(".pp-player-card"));
- assert.equal(h.body.querySelector(".pp-album-art").icon, "music");
+ assert.ok(h.body.querySelector(".pp-mobile-player"));
+ h.plugin.commands.get("open-queue").callback();
+ h.plugin.commands.get("open-queue").callback();
+ assert.equal(h.body.querySelectorAll(".pp-mobile-player").length, 1);
+ assert.equal(h.body.querySelector(".pp-cover-small").icon, "music");
  h.body.querySelector(".pp-np-play").emit("click");
  assert.equal(h.body.querySelector(".pp-pooled").paused, true);
  h.body.querySelector(".pp-np-close").emit("click");
@@ -392,10 +395,10 @@ for (const mobile of [false, true]) {
   const first = h.embed(a, "app://vault/first.mp3");
   h.embed(a, "app://vault/second.mp3"); void first.play();
   if (mobile) h.body.querySelector(".action").emit("click");
-  const bar = h.body.querySelector(".pp-now-playing");
+  const bar = h.body.querySelector(mobile ? ".pp-queue-transport" : ".pp-now-playing");
   assert.equal(bar.querySelector(".pp-np-skip"), null);
   for (const button of bar.querySelectorAll(".clickable-icon")) assert.equal(button.getAttribute("title"), null);
-  const controls = bar.children.filter(el => el.hasClass("clickable-icon") && !el.hasClass("pp-np-source"));
+  const controls = bar.children.filter(el => el.hasClass("pp-np-play") || el.hasClass("pp-np-track-button"));
   assert.deepEqual(controls.map(el => el.attributes["aria-label"]), mobile ? [
    "Restart audio (double tap: back 5 seconds)", "Pause", "Next audio (double tap: forward 5 seconds)",
   ] : ["Restart audio (double tap: back 5 seconds)", "Pause", "Next audio (double tap: forward 5 seconds)"]);
@@ -577,7 +580,7 @@ test("queue pointer cancellation never commits and touch swipes scroll instead o
  identity.emit("pointerdown", {pointerId: 2, pointerType: "touch", button: 0, clientY: 200});
  identity.emit("pointermove", {pointerId: 2, clientY: 150});
  identity.emit("pointerup", {pointerId: 2});
- assert.equal(el.scrollTop, 50);
+ assert.equal(el.scrollTop, 0); // Browser owns touch scrolling; no synthetic scroll jumps.
  assert.equal(ctrl.queue[0].note, "a.md");
  identity.emit("pointerdown", {pointerId: 3, pointerType: "mouse", button: 0, clientY: 120});
  identity.emit("pointermove", {pointerId: 3, clientY: 250});
@@ -594,8 +597,8 @@ for (const mobile of [false, true]) {
   const el = h.body.createDiv(); const surface = h.queueSurface(el);
   const controls = el.querySelector(".pp-queue-transport");
   const buttons = controls.querySelectorAll("button");
-  assert.equal(buttons.length, 3);
-  assert.deepEqual(buttons.map(button => button.icon), ["rewind", "pause", "fast-forward"]);
+  assert.equal(buttons.length, mobile ? 5 : 3);
+  assert.deepEqual(buttons.slice(0, 3).map(button => button.icon), ["rewind", "pause", "fast-forward"]);
   for (const button of buttons) assert.equal(button.getAttribute("title"), null);
   ctrl.active.currentTime = 40;
   buttons[0].emit("click"); buttons[0].emit("click");
@@ -638,7 +641,7 @@ for (const mobile of [false, true]) {
   const next = h.body.querySelector(".pp-np-next");
   assert.equal(next.disabled, true);
   h.plugin.ctrl.enqueue("app://vault/next.mp3", "Next.md");
-  assert.equal(next.disabled, false);
+  assert.equal(h.body.querySelector(".pp-np-next").disabled, false);
   surface.destroy();
  });
 }

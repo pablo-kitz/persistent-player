@@ -287,16 +287,18 @@ class NowPlayingBar {
 	}
 
 	openPlayer() {
-		if (Platform.isMobile && !this.panel && this.ctrl.hasActive) {
-			const panel = new Modal(this.app);
-			this.panel = panel;
-			panel.modalEl.classList.add("pp-player-modal");
-			panel.onClose = () => { this.panel = null; this.show(); };
-			panel.open();
-		}
-		this.show();
-		this.playBtn?.focus();
-	}
+        if (Platform.isMobile) {
+            if (this.panel) return;
+            const panel = new Modal(this.app);
+            this.panel = panel;
+            panel.modalEl.addClass("pp-mobile-player");
+            const surface = new QueueSurface(panel.contentEl, this.ctrl, this.app, () => panel.close());
+            panel.onClose = () => { surface.destroy(); this.panel = null; this.show(); };
+            panel.open();
+            return;
+        }
+        this.show(); this.playBtn?.focus();
+    }
 
 	private mainView(): ItemView | null {
 		// Restrict recency to the central workspace; sidebar focus must not
@@ -307,7 +309,7 @@ class NowPlayingBar {
 
 	show() {
 		const view = this.mainView();
-		if (Platform.isMobile && !this.panel) {
+		if (Platform.isMobile) {
 			this.hide();
 			if (view && this.ctrl.hasActive) {
 				this.mobileActions = [view.addAction("music", "Open player", () => this.openPlayer())];
@@ -437,7 +439,7 @@ class NowPlayingBar {
 		if (this.timeEl) this.timeEl.textContent = `${fmt(t)} / ${fmt(d)}`;
 	}
 
-	destroy() { const panel = this.panel; if (panel) { panel.onClose = () => {}; panel.close(); } this.panel = null; this.hide(); }
+	destroy() { this.panel?.close(); this.panel = null; this.hide(); }
 }
 
 // -- Playing Tab Indicator ---------------------------------------------------
@@ -597,13 +599,17 @@ class QueueSurface {
  private playhead?: SeekTrack;
  private time?: HTMLElement;
  private scroll = () => {
-  // The compensating spacer keeps the scroll range stable during collapse.
+  // Only artwork transforms change; the header and list keep fixed geometry.
   const progress = Platform.isMobile ? Math.max(0, Math.min(1, this.container.scrollTop / 180)) : 1;
   this.container.style.setProperty("--pp-collapse", String(progress));
  };
- constructor(private container: HTMLElement, private ctrl: Controller, private app: App) {
+ constructor(private container: HTMLElement, private ctrl: Controller, private app: App, private close: () => void = () => {}) {
   this.transport = new TransportButtons(ctrl);
-  for (const event of ["queue", "change", "metadata", "play", "pause"] as const) this.off.push(ctrl.on(event, () => this.render()));
+  for (const event of ["queue", "change", "metadata", "ratechange"] as const) this.off.push(ctrl.on(event, () => this.render()));
+  for (const event of ["play", "pause"] as const) this.off.push(ctrl.on(event, () => {
+   const play = this.head.querySelector<HTMLElement>(".pp-np-play");
+   if (play) syncPlaybackButton(play, ctrl.playing);
+  }));
   this.off.push(ctrl.on("timeupdate", () => this.syncProgress()));
   container.addEventListener("scroll", this.scroll, {passive: true});
   this.render();
@@ -626,14 +632,24 @@ class QueueSurface {
    renderRecording(identity, this.ctrl.active.src, this.ctrl.metadata);
    const controls = this.head.createDiv("pp-queue-transport");
    this.transport.create(controls, "rewind", "Restart audio (double tap: back 5 seconds)", -1);
-   syncPlaybackButton(playbackButton(controls, () => this.ctrl.toggle()), this.ctrl.playing);
+   const play = playbackButton(controls, () => this.ctrl.toggle());
+   play.addClass("pp-np-play");
+   syncPlaybackButton(play, this.ctrl.playing);
    this.transport.create(controls, "fast-forward", "Next audio (double tap: forward 5 seconds)", 1).disabled = !this.ctrl.canSkipTrack(1);
    this.playhead = new SeekTrack(controls, this.ctrl);
    this.time = controls.createSpan("pp-np-time");
    this.syncProgress();
-   if (Platform.isMobile) el.createDiv("pp-collapse-spacer");
-  } else this.head.createEl("p", {text: "Choose a recording to start listening."});
-  if (!this.ctrl.queue.length) el.createEl("p", {text: "Add audio recordings using their queue controls."});
+   if (Platform.isMobile) {
+    speedButton(controls, this.ctrl);
+    const stop = actionButton(controls, "square", "Stop playback", () => { this.ctrl.clearNote(this.ctrl.notePath); this.close(); });
+    stop.addClass("pp-np-close");
+   }
+  } else this.head.hidden = true;
+  if (!this.ctrl.queue.length) {
+   const empty = el.createDiv("pp-queue-empty");
+   empty.createDiv({cls: "pp-queue-empty-title", text: this.ctrl.hasActive ? "Nothing queued" : "Your queue is empty"});
+   empty.createDiv({cls: "pp-queue-empty-hint", text: 'Use "Add to queue" on an audio recording.'});
+  }
   this.ctrl.queue.forEach((track, index) => {
    const row = el.createDiv("pp-queue-row");
    const identity = row.createDiv("pp-recording");
@@ -661,24 +677,23 @@ class QueueSurface {
    let target = index;
    let dragging = false;
    let startY = 0;
-   let lastY = 0;
    let hold: ReturnType<typeof setTimeout> | undefined;
    const cancelHold = () => { if (hold !== undefined) clearTimeout(hold); hold = undefined; };
    this.dragCleanups.push(cancelHold);
    identity.addEventListener("pointerdown", event => {
     if (event.button !== 0 || (event.target as HTMLElement).closest("button")) return;
     pointer = event.pointerId; target = index;
-    startY = lastY = event.clientY;
-    identity.setPointerCapture(pointer);
+    startY = event.clientY;
     dragging = event.pointerType !== "touch";
+    if (dragging) identity.setPointerCapture(pointer);
     if (dragging) row.addClass("pp-dragging");
-    else hold = setTimeout(() => { dragging = true; row.addClass("pp-dragging"); }, 350);
+    else hold = setTimeout(() => { dragging = true; if (pointer !== null) identity.setPointerCapture(pointer); row.addClass("pp-dragging"); }, 350);
    });
+   identity.addEventListener("touchmove", event => { if (dragging) event.preventDefault(); }, {passive: false});
    identity.addEventListener("pointermove", event => {
     if (event.pointerId !== pointer) return;
     if (!dragging) {
      if (Math.abs(event.clientY - startY) > 8) cancelHold();
-     el.scrollTop += lastY - event.clientY; lastY = event.clientY;
      return;
     }
     const bounds = el.getBoundingClientRect();
@@ -825,13 +840,7 @@ export default class PersistentPlayerPlugin extends Plugin {
 	}
 
  private async openQueue() {
-  if (Platform.isMobile) {
-   const modal = new Modal(this.app);
-   modal.setTitle("Player queue");
-   const surface = new QueueSurface(modal.contentEl, this.ctrl, this.app);
-   modal.onClose = () => surface.destroy();
-   this.register(() => modal.close()); modal.open(); return;
-  }
+  if (Platform.isMobile) { this.bar.openPlayer(); return; }
   const leaf = this.app.workspace.getLeavesOfType(QUEUE_VIEW)[0] ?? this.app.workspace.getRightLeaf(false);
   if (leaf) { await leaf.setViewState({type: QUEUE_VIEW, active: true}); await this.app.workspace.revealLeaf(leaf); }
  }
