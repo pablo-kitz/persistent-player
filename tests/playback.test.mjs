@@ -285,11 +285,11 @@ test("an explicit new embed switches playback and keeps its actual source in spl
 	assert.equal(second.paused, false);
 	assert.equal(a.tabHeaderEl.querySelector(".pp-tab-playing"), null);
 	assert.ok(b.tabHeaderEl.querySelector(".pp-tab-playing"));
-	assert.equal(h.body.querySelector(".pp-np-source").attributes["title"], "Open source note: Second.md");
+	assert.equal(h.body.querySelector(".pp-np-source").attributes["aria-label"], "Open source note: Second.md");
 	assert.equal(h.start(a), first);
 	assert.equal(first.currentTime, 19);
 	assert.equal(second.paused, true);
-	assert.equal(h.body.querySelector(".pp-np-source").attributes["title"], "Open source note: First.md");
+	assert.equal(h.body.querySelector(".pp-np-source").attributes["aria-label"], "Open source note: First.md");
 });
 
 test("non-Markdown focus hides only the controls; missing tab headers are safe", () => {
@@ -393,12 +393,14 @@ for (const mobile of [false, true]) {
   h.embed(a, "app://vault/second.mp3"); void first.play();
   if (mobile) h.body.querySelector(".action").emit("click");
   const bar = h.body.querySelector(".pp-now-playing");
+  assert.equal(bar.querySelector(".pp-np-skip"), null);
+  for (const button of bar.querySelectorAll(".clickable-icon")) assert.equal(button.getAttribute("title"), null);
   const controls = bar.children.filter(el => el.hasClass("clickable-icon") && !el.hasClass("pp-np-source"));
   assert.deepEqual(controls.map(el => el.attributes["aria-label"]), mobile ? [
-   "Restart audio (double tap: back 5 seconds)", "Skip back 5 seconds", "Play or pause", "Skip forward 5 seconds", "Next audio (double tap: forward 5 seconds)",
-  ] : ["Restart audio (double tap: back 5 seconds)", "Play or pause", "Next audio (double tap: forward 5 seconds)"]);
+   "Restart audio (double tap: back 5 seconds)", "Pause", "Next audio (double tap: forward 5 seconds)",
+  ] : ["Restart audio (double tap: back 5 seconds)", "Pause", "Next audio (double tap: forward 5 seconds)"]);
   if (!mobile) assert.deepEqual(bar.querySelector(".pp-np-right").children.map(el => el.attributes["aria-label"]),
-   ["Queue", undefined, "Skip back 5 seconds", "Playback speed", "Skip forward 5 seconds", "Open source note: Playlist.md", "Close player"]);
+   [undefined, "Playback speed", "Open source note: Playlist.md", "Queue", "Close player"]);
  });
 }
 
@@ -476,7 +478,8 @@ test("speed opens a checked selection menu and source icon precedes close", () =
  assert.equal(icon.icon, "external-link");
  assert.equal(icon.querySelector(".pp-source-arrow"), null);
  const siblings = icon.parentElement.children;
- assert.equal(siblings[siblings.indexOf(icon) + 1].hasClass("pp-np-close"), true);
+ assert.equal(siblings[siblings.indexOf(icon) + 1].getAttribute("aria-label"), "Queue");
+ assert.equal(siblings[siblings.indexOf(icon) + 2].hasClass("pp-np-close"), true);
  const speed = h.body.querySelector(".pp-np-rate");
  speed.emit("click");
  assert.equal(speed.textContent, "1x");
@@ -546,9 +549,13 @@ for (const mobile of [false, true]) {
   assert.equal(el.style["--pp-collapse"], mobile ? "0.5" : "1");
   ctrl.enqueue("app://vault/c.mp3", "C.md");
   assert.equal(el.scrollTop, 90);
-  const seek = el.querySelector("input"); seek.value = "42"; seek.emit("input");
+  const seek = el.querySelector(".pp-np-center");
+  assert.equal(el.querySelector("input"), null);
+  el.querySelector(".pp-np-track").bounds = {left: 0, width: 120};
+  seek.emit("pointerdown", {button: 0, pointerId: 1, clientX: 42});
+  seek.emit("pointerup", {pointerId: 1});
   assert.equal(ctrl.currentTime, 42);
-  ctrl.active.emit("timeupdate"); assert.equal(seek.value, "42");
+  ctrl.active.emit("timeupdate"); assert.equal(seek.getAttribute("aria-valuenow"), "42");
   el.scrollTop = -10; el.emit("scroll");
   assert.equal(el.style["--pp-collapse"], mobile ? "0" : "1");
   surface.destroy(); ctrl.enqueue("app://vault/d.mp3", "D.md");
@@ -578,3 +585,60 @@ test("queue pointer cancellation never commits and touch swipes scroll instead o
  assert.deepEqual(Array.from(ctrl.queue, t => t.note), ["b.md", "c.md", "a.md"]);
  surface.destroy();
 });
+
+for (const mobile of [false, true]) {
+ test(`queue transport shares nudges without extra buttons or tooltips (${mobile})`, async () => {
+  const h = setup(mobile); const ctrl = h.plugin.ctrl;
+  ctrl.loadAndPlay("app://vault/a.mp3", "A.md");
+  ctrl.enqueue("app://vault/b.mp3", "B.md");
+  const el = h.body.createDiv(); const surface = h.queueSurface(el);
+  const controls = el.querySelector(".pp-queue-transport");
+  const buttons = controls.querySelectorAll("button");
+  assert.equal(buttons.length, 3);
+  assert.deepEqual(buttons.map(button => button.icon), ["rewind", "pause", "fast-forward"]);
+  for (const button of buttons) assert.equal(button.getAttribute("title"), null);
+  ctrl.active.currentTime = 40;
+  buttons[0].emit("click"); buttons[0].emit("click");
+  assert.equal(ctrl.currentTime, 35);
+  assert.equal(buttons[0].querySelector(".pp-nudge-feedback").textContent, "\u22125");
+  buttons[2].emit("click"); buttons[2].emit("click");
+  assert.equal(ctrl.currentTime, 40);
+  assert.equal(buttons[2].querySelector(".pp-nudge-feedback").textContent, "+5");
+  buttons[0].emit("click");
+  surface.destroy();
+  await new Promise(resolve => setTimeout(resolve, 330));
+  assert.equal(ctrl.currentTime, 40);
+ });
+}
+
+for (const mobile of [false, true]) {
+ test(`all controls share native button semantics and playback state (${mobile})`, () => {
+  const h = setup(mobile); const note = h.note("Buttons.md"); h.focus(note);
+  const audio = h.embed(note); void audio.play();
+  if (mobile) h.body.querySelector(".action").emit("click");
+  const queue = h.body.createDiv(); const surface = h.queueSurface(queue);
+  const buttons = h.body.querySelectorAll("button");
+  assert.ok(buttons.length > 8);
+  for (const button of buttons) {
+   assert.equal(button.hasClass("pp-button"), true);
+   assert.equal(button.getAttribute("type"), "button");
+   assert.ok(button.getAttribute("aria-label"));
+   assert.equal(button.getAttribute("title"), null);
+  }
+  const barPlay = h.body.querySelector(".pp-np-play");
+  assert.equal(barPlay.tag, "button");
+  assert.equal(h.body.querySelector(".pp-np-close").tag, "button");
+  barPlay.emit("click");
+  assert.equal(barPlay.getAttribute("aria-label"), "Play");
+  assert.equal(audio.nextSibling.querySelector("button").getAttribute("aria-label"), "Play");
+  const queuePlay = queue.querySelectorAll("button").find(button => button.getAttribute("aria-label") === "Play");
+  queuePlay.emit("click");
+  assert.equal(h.plugin.ctrl.playing, true);
+  assert.equal(audio.nextSibling.querySelector("button").getAttribute("aria-label"), "Pause");
+  const next = h.body.querySelector(".pp-np-next");
+  assert.equal(next.disabled, true);
+  h.plugin.ctrl.enqueue("app://vault/next.mp3", "Next.md");
+  assert.equal(next.disabled, false);
+  surface.destroy();
+ });
+}

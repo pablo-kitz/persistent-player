@@ -165,34 +165,125 @@ class Controller {
 
 // -- Now Playing Bar ---------------------------------------------------------
 
+class TransportButtons {
+ private pendingTrackTap: ReturnType<typeof setTimeout> | null = null;
+ private pendingTrackButton: HTMLElement | null = null;
+ constructor(private ctrl: Controller) {}
+ cancel() {
+  if (this.pendingTrackTap !== null) clearTimeout(this.pendingTrackTap);
+  this.pendingTrackTap = null;
+  this.pendingTrackButton = null;
+ }
+	create(parent: HTMLElement, icon: string, title: string, delta: number) {
+		const button = actionButton(parent, icon, title, () => {
+			if (button.disabled) return;
+			if (this.pendingTrackButton === button && this.pendingTrackTap !== null) {
+				clearTimeout(this.pendingTrackTap);
+				this.pendingTrackTap = null;
+				this.pendingTrackButton = null;
+				this.ctrl.seekBy(delta * 5);
+				button.querySelector(".pp-nudge-feedback")?.remove();
+				const feedback = button.createSpan({
+					cls: "pp-nudge-feedback",
+					text: delta < 0 ? "−5" : "+5",
+				});
+				feedback.setAttribute("aria-hidden", "true");
+				feedback.addEventListener("animationend", () => feedback.remove());
+				return;
+			}
+			if (this.pendingTrackTap !== null) clearTimeout(this.pendingTrackTap);
+			this.pendingTrackButton = button;
+			const audio = this.ctrl.active;
+			this.pendingTrackTap = setTimeout(() => {
+				this.pendingTrackButton = null;
+				this.pendingTrackTap = null;
+				if (audio !== this.ctrl.active) return;
+				if (delta < 0) this.ctrl.seekBy(-this.ctrl.currentTime);
+				else this.ctrl.skipTrack(delta);
+			}, 300);
+		});
+        button.addClass("pp-np-track-button");
+        button.addClass(delta < 0 ? "pp-np-previous" : "pp-np-next");
+		return button;
+	}
+
+}
+
+// One seek-track implementation for the bar, sidebar, and mobile queue.
+class SeekTrack {
+ readonly element: HTMLElement;
+ private track: HTMLElement;
+ private fill: HTMLElement;
+ private pointer: number | null = null;
+ constructor(parent: HTMLElement, private ctrl: Controller) {
+  this.element = parent.createDiv("pp-np-center");
+  this.element.setAttribute("role", "slider");
+  this.element.setAttribute("aria-label", "Playback position");
+  this.element.setAttribute("tabindex", "0");
+  this.element.setAttribute("aria-valuemin", "0");
+  this.track = this.element.createDiv("pp-np-track");
+  this.fill = this.track.createDiv("pp-np-fill");
+  this.element.addEventListener("pointerdown", event => {
+   if (event.button !== 0) return;
+   this.pointer = event.pointerId;
+   this.element.setPointerCapture(event.pointerId);
+   this.seekTo(event.clientX);
+  });
+  this.element.addEventListener("pointermove", event => { if (this.pointer === event.pointerId) this.seekTo(event.clientX); });
+  for (const event of ["pointerup", "pointercancel", "lostpointercapture"]) this.element.addEventListener(event, () => { this.pointer = null; });
+  this.element.addEventListener("keydown", event => {
+   if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+   event.preventDefault();
+   const duration = this.ctrl.duration();
+   if (!Number.isFinite(duration) || duration <= 0) return;
+   this.ctrl.seek(event.key === "Home" ? 0 : event.key === "End" ? duration : Math.max(0, Math.min(duration, this.ctrl.currentTime + (event.key === "ArrowLeft" ? -5 : 5))));
+   this.sync();
+  });
+  this.sync();
+ }
+ sync() {
+  const duration = this.ctrl.duration();
+  const valid = Number.isFinite(duration) && duration > 0;
+  const time = valid ? Math.max(0, Math.min(duration, this.ctrl.currentTime)) : 0;
+  this.fill.style.width = `${valid ? time / duration * 100 : 0}%`;
+  this.element.setAttribute("aria-valuemax", String(valid ? duration : 0));
+  this.element.setAttribute("aria-valuenow", String(time));
+  this.element.setAttribute("aria-valuetext", `${fmt(time)} / ${fmt(duration)}`);
+ }
+ private seekTo(x: number) {
+  const bounds = this.track.getBoundingClientRect();
+  const duration = this.ctrl.duration();
+  if (!bounds.width || !Number.isFinite(duration) || duration <= 0) return;
+  this.ctrl.seek(Math.max(0, Math.min(1, (x - bounds.left) / bounds.width)) * duration);
+  this.sync();
+ }
+}
+
 class NowPlayingBar {
 	private bar: HTMLElement | null = null;
 	private playBtn: HTMLElement | null = null;
-	private track: HTMLElement | null = null;
-	private fill: HTMLElement | null = null;
+	private seekTrack: SeekTrack | null = null;
 	private timeEl: HTMLElement | null = null;
 	private rateEl: HTMLElement | null = null;
 	private sourceEl: HTMLElement | null = null;
-	private dragging = false;
 	private mobileActions: HTMLElement[] = [];
 	private panel: Modal | null = null;
 	private art: HTMLElement | null = null;
 	private previous: HTMLButtonElement | null = null;
 	private next: HTMLButtonElement | null = null;
 	private identity: HTMLElement | null = null;
-	private pendingTrackTap: ReturnType<typeof setTimeout> | null = null;
-	private pendingTrackButton: HTMLElement | null = null;
+	private transport: TransportButtons;
 
-	constructor(private ctrl: Controller, private app: App, plugin: Plugin, private openQueue: () => void = () => {}) {
+	constructor(private ctrl: Controller, private app: App, _plugin: Plugin, private openQueue: () => void = () => {}) {
+		this.transport = new TransportButtons(ctrl);
 		ctrl.on("play", () => { this.show(); this.syncIcon(); });
 		ctrl.on("change", () => { this.show(); this.syncSource(); this.syncIcon(); this.syncProgress(); this.syncIdentity(); });
 		ctrl.on("metadata", () => { this.syncArtwork(); this.syncIdentity(); });
 		ctrl.on("pause", () => this.syncIcon());
+        ctrl.on("queue", () => this.syncTracks());
 		ctrl.on("timeupdate", () => this.syncProgress());
 		ctrl.on("ratechange", () => { if (this.rateEl) this.rateEl.textContent = `${this.ctrl.playbackRate}x`; });
 
-		plugin.registerDomEvent(document, "pointermove", (e) => { if (this.dragging) this.seekTo(e.clientX); });
-		plugin.registerDomEvent(document, "pointerup", () => { this.dragging = false; });
 	}
 
 	openPlayer() {
@@ -234,104 +325,48 @@ class NowPlayingBar {
 			this.art = bar.createDiv("pp-album-art");
 			this.syncArtwork();
 		}
-		this.previous = this.mkTrackButton(bar, "rewind", "Restart audio (double tap: back 5 seconds)", -1);
-		if (Platform.isMobile) this.mkSkip(bar, "-5s", "Skip back 5 seconds", -5);
-		const play = (this.playBtn = bar.createDiv("clickable-icon pp-np-play"));
-		setIcon(play, this.ctrl.playing ? "pause" : "play");
-		play.setAttribute("aria-label", "Play or pause");
-		play.setAttribute("tabindex", "0");
-		play.setAttribute("title", "Play or pause");
-		play.addEventListener("click", () => this.ctrl.toggle());
-		if (Platform.isMobile) this.mkSkip(bar, "+5s", "Skip forward 5 seconds", 5);
-		this.next = this.mkTrackButton(bar, "fast-forward", "Next audio (double tap: forward 5 seconds)", 1);
+		this.previous = this.transport.create(bar, "rewind", "Restart audio (double tap: back 5 seconds)", -1);
+        this.playBtn = playbackButton(bar, () => this.ctrl.toggle());
+        this.playBtn.addClass("pp-np-play");
+        syncPlaybackButton(this.playBtn, this.ctrl.playing);
+		this.next = this.transport.create(bar, "fast-forward", "Next audio (double tap: forward 5 seconds)", 1);
 		this.syncTracks();
 		this.identity = bar.createDiv("pp-np-identity");
 		this.syncIdentity();
 
-		const center = bar.createDiv("pp-np-center");
-		this.track = center.createDiv("pp-np-track");
-		this.fill = this.track.createDiv("pp-np-fill");
-		this.syncProgress();
-		center.addEventListener("pointerdown", (e) => { this.dragging = true; this.seekTo(e.clientX); });
+		this.seekTrack = new SeekTrack(bar, this.ctrl);
 
 		const right = bar.createDiv("pp-np-right");
-  actionButton(right, "list-music", "Queue", this.openQueue);
 		this.timeEl = right.createSpan({ cls: "pp-np-time" });
 		this.syncProgress();
-		if (!Platform.isMobile) this.mkSkip(right, "-5s", "Skip back 5 seconds", -5);
-		this.rateEl = right.createEl("button", { cls: "clickable-icon pp-np-rate" });
-		this.rateEl.textContent = `${this.ctrl.playbackRate}x`;
-		this.rateEl.setAttribute("aria-label", "Playback speed");
-		this.rateEl.setAttribute("title", "Playback speed");
-		this.rateEl.setAttribute("aria-haspopup", "menu");
-		this.rateEl.addEventListener("click", () => this.openRateMenu());
-		if (!Platform.isMobile) this.mkSkip(right, "+5s", "Skip forward 5 seconds", 5);
-		this.sourceEl = right.createEl("button", { cls: "clickable-icon pp-np-source" });
-		this.sourceEl.setAttribute("type", "button");
-		this.syncSource();
-		this.sourceEl.addEventListener("click", () => {
-			if (this.ctrl.notePath) void this.app.workspace.openLinkText(this.ctrl.notePath, "");
-		});
-		const close = right.createDiv("clickable-icon pp-np-close");
-		setIcon(close, Platform.isMobile ? "square" : "x");
-		if (Platform.isMobile) close.createSpan({ text: "Stop" });
-		const closeLabel = Platform.isMobile ? "Stop playback" : "Close player";
-		close.setAttribute("aria-label", closeLabel);
-		close.setAttribute("title", closeLabel);
-		close.addEventListener("click", () => {
-			this.ctrl.clearNote(this.ctrl.notePath);
-			this.panel?.close();
-			this.hide();
-		});
+        this.rateEl = speedButton(right, this.ctrl);
+        this.sourceEl = actionButton(right, "external-link", "Open source note", () => {
+            if (this.ctrl.notePath) void this.app.workspace.openLinkText(this.ctrl.notePath, "");
+        });
+        this.sourceEl.addClass("pp-np-source");
+        this.syncSource();
+  actionButton(right, "list-music", "Queue", this.openQueue);
+        const close = actionButton(right, Platform.isMobile ? "square" : "x", Platform.isMobile ? "Stop playback" : "Close player", () => {
+            this.ctrl.clearNote(this.ctrl.notePath);
+            this.panel?.close();
+            this.hide();
+        });
+        close.addClass("pp-np-close");
+        if (Platform.isMobile) close.createSpan({ text: "Stop" });
 
 		vc.insertBefore(bar, vc.firstChild);
 	}
 
 	hide() {
-		if (this.pendingTrackTap !== null) clearTimeout(this.pendingTrackTap);
-		this.pendingTrackTap = null;
+		this.transport.cancel();
 		this.mobileActions.forEach(el => el.remove());
 		this.mobileActions = [];
 		this.bar?.remove();
-		this.bar = this.playBtn = this.track = this.fill = this.timeEl = this.rateEl = this.sourceEl = null;
-		this.dragging = false;
+		this.bar = this.playBtn = this.timeEl = this.rateEl = this.sourceEl = null;
+		this.seekTrack = null;
 		this.art = this.previous = this.next = this.identity = null;
 	}
 
-	private mkTrackButton(parent: HTMLElement, icon: string, title: string, delta: number) {
-		const button = parent.createEl("button", { cls: `clickable-icon pp-np-track-button ${delta < 0 ? "pp-np-previous" : "pp-np-next"}` });
-		button.setAttribute("aria-label", title);
-		button.setAttribute("title", title);
-		setIcon(button, icon);
-		button.addEventListener("click", () => {
-			if (button.disabled) return;
-			if (this.pendingTrackButton === button && this.pendingTrackTap !== null) {
-				clearTimeout(this.pendingTrackTap);
-				this.pendingTrackTap = null;
-				this.pendingTrackButton = null;
-				this.ctrl.seekBy(delta * 5);
-				button.querySelector(".pp-nudge-feedback")?.remove();
-				const feedback = button.createSpan({
-					cls: "pp-nudge-feedback",
-					text: delta < 0 ? "−5" : "+5",
-				});
-				feedback.setAttribute("aria-hidden", "true");
-				feedback.addEventListener("animationend", () => feedback.remove());
-				return;
-			}
-			if (this.pendingTrackTap !== null) clearTimeout(this.pendingTrackTap);
-			this.pendingTrackButton = button;
-			const audio = this.ctrl.active;
-			this.pendingTrackTap = setTimeout(() => {
-				this.pendingTrackButton = null;
-				this.pendingTrackTap = null;
-				if (audio !== this.ctrl.active) return;
-				if (delta < 0) this.ctrl.seekBy(-this.ctrl.currentTime);
-				else this.ctrl.skipTrack(delta);
-			}, 300);
-		});
-		return button;
-	}
 
 	private syncTracks() {
 		for (const button of [this.previous, this.next]) {
@@ -359,7 +394,6 @@ class NowPlayingBar {
 		const filename = audioFilename(this.ctrl.active?.src ?? "");
 		const label = this.identity.createSpan({ cls: "pp-np-title" });
 		label.textContent = metadata.title || filename;
-		label.setAttribute("title", filename);
 		if (Platform.isMobile) {
 			for (const value of [metadata.artist, metadata.album]) {
 				if (value) this.identity.createDiv({ cls: "pp-track-detail", text: value });
@@ -388,48 +422,19 @@ class NowPlayingBar {
 		const view = this.mainView();
 		this.sourceEl.hidden = view instanceof MarkdownView && view.file?.path === path;
 		setIcon(this.sourceEl, "external-link");
-		this.sourceEl.setAttribute("title", path ? `Open source note: ${path}` : "Audio");
 		this.sourceEl.setAttribute("aria-label", path ? `Open source note: ${path}` : "Audio");
 	}
 
-	private mkSkip(parent: HTMLElement, label: string, title: string, delta: number) {
-		const btn = parent.createDiv(`clickable-icon pp-np-skip ${delta < 0 ? "pp-np-back" : "pp-np-forward"}`);
-		btn.textContent = label;
-		btn.setAttribute("aria-label", title);
-		btn.setAttribute("title", title);
-		btn.addEventListener("click", () => this.ctrl.seekBy(delta));
-	}
 
 	private syncIcon() {
-		if (this.playBtn) setIcon(this.playBtn, this.ctrl.playing ? "pause" : "play");
+		if (this.playBtn) syncPlaybackButton(this.playBtn, this.ctrl.playing);
 	}
 
 	private syncProgress() {
 		const d = this.ctrl.duration();
 		const t = this.ctrl.currentTime;
-		if (this.fill && !this.dragging) this.fill.style.width = `${d > 0 && Number.isFinite(d) ? (t / d) * 100 : 0}%`;
+		this.seekTrack?.sync();
 		if (this.timeEl) this.timeEl.textContent = `${fmt(t)} / ${fmt(d)}`;
-	}
-
-	private seekTo(clientX: number) {
-		if (!this.track) return;
-		const r = this.track.getBoundingClientRect();
-		const ratio = Math.max(0, Math.min(1, (clientX - r.left) / r.width));
-		if (this.fill) this.fill.style.width = `${ratio * 100}%`;
-		const d = this.ctrl.duration();
-		if (d) this.ctrl.seek(ratio * d);
-	}
-
-	private openRateMenu() {
-		if (!this.rateEl) return;
-		const menu = new Menu();
-		for (const rate of [0.5, 0.75, 1, 1.25, 1.5, 2]) {
-			menu.addItem(item => item.setTitle(`${rate}×`)
-				.setChecked(this.ctrl.playbackRate === rate)
-				.onClick(() => this.ctrl.setRate(rate)));
-		}
-		const bounds = this.rateEl.getBoundingClientRect();
-		menu.showAtPosition({ x: bounds.left, y: bounds.bottom + 4 });
 	}
 
 	destroy() { const panel = this.panel; if (panel) { panel.onClose = () => {}; panel.close(); } this.panel = null; this.hide(); }
@@ -461,7 +466,6 @@ class PlayingTabIndicator {
 			if (close?.parentElement === inner) inner.insertBefore(badge, close);
 			badge.setAttribute("role", "img");
 			badge.setAttribute("aria-label", "Playing audio from this note");
-			badge.setAttribute("title", "Playing audio from this note");
 			setIcon(badge, "volume-2");
 			this.badges.add(badge);
 		}
@@ -504,7 +508,7 @@ class EmbedPlaybackIndicator {
      renderRecording(identity, src, {});
      void readTrackMetadata(this.app, src).then(metadata => { if (!this.destroyed && this.cards.get(audio)?.row === row) renderRecording(identity, src, metadata); });
      const actions = row.createDiv("pp-card-actions");
-     const button = actionButton(actions, "play", "Play", () => {
+     const button = playbackButton(actions, () => {
       if (audioSourceKey(this.ctrl.active?.src ?? "") === audioSourceKey(src)) this.ctrl.toggle();
       else this.ctrl.loadAndPlay(src, note, Array.from(leaf.view.containerEl.querySelectorAll("audio")).map(el => el.src || el.currentSrc).filter(Boolean));
      });
@@ -517,11 +521,7 @@ class EmbedPlaybackIndicator {
     }
     if (card) {
      const playing = this.ctrl.playing && audioSourceKey(this.ctrl.active?.src ?? "") === audioSourceKey(src);
-     const label = playing ? "Pause" : "Play";
-     if (card.button.getAttribute("aria-label") !== label) {
-      setIcon(card.button, playing ? "pause" : "play");
-      card.button.setAttribute("aria-label", label); card.button.title = label;
-     }
+     syncPlaybackButton(card.button, playing);
     }
    }
   }
@@ -534,9 +534,36 @@ class EmbedPlaybackIndicator {
  }
 }
 
-function actionButton(parent: HTMLElement, icon: string, label: string, action: () => void) {
- const button = parent.createEl("button", {cls: "clickable-icon", attr: {type: "button", "aria-label": label, title: label}});
- setIcon(button, icon); button.addEventListener("click", action); return button;
+// All plugin-owned controls use native buttons and one visual primitive.
+function actionButton(parent: HTMLElement, icon: string | null, label: string, action: () => void) {
+ const button = parent.createEl("button", {cls: "clickable-icon pp-button", attr: {type: "button", "aria-label": label}});
+ if (icon) setIcon(button, icon);
+ button.addEventListener("click", () => { if (!button.disabled) action(); });
+ return button;
+}
+function playbackButton(parent: HTMLElement, action: () => void) {
+ return actionButton(parent, "play", "Play", action);
+}
+function syncPlaybackButton(button: HTMLElement, playing: boolean) {
+ const label = playing ? "Pause" : "Play";
+ // Avoid mutations on every embed scan (the scanner observes DOM changes).
+ if (button.getAttribute("aria-label") === label) return;
+ setIcon(button, playing ? "pause" : "play");
+ button.setAttribute("aria-label", label);
+}
+function speedButton(parent: HTMLElement, ctrl: Controller) {
+ const button = actionButton(parent, null, "Playback speed", () => {
+  const menu = new Menu();
+  for (const rate of [0.5, 0.75, 1, 1.25, 1.5, 2]) {
+   menu.addItem(item => item.setTitle(`${rate}\u00d7`).setChecked(ctrl.playbackRate === rate).onClick(() => ctrl.setRate(rate)));
+  }
+  const bounds = button.getBoundingClientRect();
+  menu.showAtPosition({x: bounds.left, y: bounds.bottom + 4});
+ });
+ button.addClass("pp-np-rate");
+ button.setAttribute("aria-haspopup", "menu");
+ button.textContent = `${ctrl.playbackRate}x`;
+ return button;
 }
 function renderRecording(parent: HTMLElement, src: string, metadata: MediaMetadataInit) {
  parent.replaceChildren();
@@ -564,9 +591,10 @@ const QUEUE_VIEW = "persistent-player-queue";
 class QueueSurface {
  private off: (() => void)[] = [];
  private head!: HTMLElement;
+ private transport: TransportButtons;
  private dragCleanups: (() => void)[] = [];
  private metadataCache = new Map<string, Promise<MediaMetadataInit>>();
- private playhead?: HTMLInputElement;
+ private playhead?: SeekTrack;
  private time?: HTMLElement;
  private scroll = () => {
   // The compensating spacer keeps the scroll range stable during collapse.
@@ -574,6 +602,7 @@ class QueueSurface {
   this.container.style.setProperty("--pp-collapse", String(progress));
  };
  constructor(private container: HTMLElement, private ctrl: Controller, private app: App) {
+  this.transport = new TransportButtons(ctrl);
   for (const event of ["queue", "change", "metadata", "play", "pause"] as const) this.off.push(ctrl.on(event, () => this.render()));
   this.off.push(ctrl.on("timeupdate", () => this.syncProgress()));
   container.addEventListener("scroll", this.scroll, {passive: true});
@@ -581,14 +610,11 @@ class QueueSurface {
  }
  private syncProgress() {
   const duration = this.ctrl.duration();
-  if (this.playhead) {
-   this.playhead.max = String(Number.isFinite(duration) ? duration : 0);
-   this.playhead.value = String(this.ctrl.currentTime);
-   this.playhead.disabled = !Number.isFinite(duration) || duration <= 0;
-  }
+  this.playhead?.sync();
   if (this.time) this.time.textContent = `${fmt(this.ctrl.currentTime)} / ${fmt(duration)}`;
  }
  render() {
+  this.transport.cancel();
   const el = this.container;
   const scrollTop = el.scrollTop;
   this.dragCleanups.forEach(cleanup => cleanup()); this.dragCleanups = [];
@@ -599,11 +625,10 @@ class QueueSurface {
    const identity = this.head.createDiv("pp-recording");
    renderRecording(identity, this.ctrl.active.src, this.ctrl.metadata);
    const controls = this.head.createDiv("pp-queue-transport");
-   actionButton(controls, "rotate-ccw", "Back 5 seconds", () => this.ctrl.seekBy(-5));
-   actionButton(controls, this.ctrl.playing ? "pause" : "play", this.ctrl.playing ? "Pause" : "Play", () => this.ctrl.toggle());
-   actionButton(controls, "skip-forward", "Next track", () => this.ctrl.skipTrack(1));
-   this.playhead = controls.createEl("input", {attr: {type: "range", min: "0", step: "0.1", "aria-label": "Playback position"}});
-   this.playhead.addEventListener("input", () => this.ctrl.seek(Number(this.playhead?.value)));
+   this.transport.create(controls, "rewind", "Restart audio (double tap: back 5 seconds)", -1);
+   syncPlaybackButton(playbackButton(controls, () => this.ctrl.toggle()), this.ctrl.playing);
+   this.transport.create(controls, "fast-forward", "Next audio (double tap: forward 5 seconds)", 1).disabled = !this.ctrl.canSkipTrack(1);
+   this.playhead = new SeekTrack(controls, this.ctrl);
    this.time = controls.createSpan("pp-np-time");
    this.syncProgress();
    if (Platform.isMobile) el.createDiv("pp-collapse-spacer");
@@ -615,14 +640,14 @@ class QueueSurface {
    const paint = (metadata: MediaMetadataInit) => {
     renderRecording(identity, track.src, metadata);
     const art = identity.querySelector<HTMLElement>(".pp-cover-small")!;
-    const play = actionButton(art, "play", `Play ${metadata.title || audioFilename(track.src)}`, () => this.ctrl.playQueued(index));
+    const play = playbackButton(art, () => this.ctrl.playQueued(index));
+    play.setAttribute("aria-label", `Play ${metadata.title || audioFilename(track.src)}`);
     play.addClass("pp-cover-play");
    };
    paint({});
    let metadata = this.metadataCache.get(track.src);
    if (!metadata) { metadata = readTrackMetadata(this.app, track.src); this.metadataCache.set(track.src, metadata); }
    void metadata.then(value => { if (el.contains(row)) paint(value); });
-   identity.title = "Drag to reorder; on touch, hold then drag";
    identity.tabIndex = 0;
    identity.setAttribute("aria-label", `Reorder ${audioFilename(track.src)}. Use Alt and arrow keys to move.`);
    identity.addEventListener("keydown", event => {
@@ -679,6 +704,7 @@ class QueueSurface {
   el.scrollTop = scrollTop; this.scroll();
  }
  destroy() {
+  this.transport.cancel();
   this.dragCleanups.forEach(cleanup => cleanup()); this.metadataCache.clear();
   this.off.forEach(off => off()); this.container.removeEventListener("scroll", this.scroll);
   this.container.replaceChildren();
