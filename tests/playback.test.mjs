@@ -31,13 +31,21 @@ function setup(mobile = false) {
 			this.children = [];
 			this.parentElement = null;
 			this.attributes = {};
-			this.style = {};
+			this.style = {setProperty(name, value) { this[name] = value; }};
+            this.scrollTop = 0;
 			this.listeners = new Map();
 			this.textContent = "";
-            this.classList = { add: cls => { this.cls += ` ${cls}`; } };
+            this.classList = {
+             add: cls => { if (!this.hasClass(cls)) this.cls += ` ${cls}`; },
+             remove: cls => { this.cls = this.cls.split(" ").filter(x => x !== cls).join(" "); },
+             toggle: (cls, value) => { if (value) this.classList.add(cls); else this.classList.remove(cls); },
+            };
 		}
 		replaceChildren() { for (const child of [...this.children]) child.remove(); }
-        getBoundingClientRect() { return {left: 100, bottom: 32}; }
+        getBoundingClientRect() { return this.bounds ?? {left: 100, top: 0, bottom: 600}; }
+        get offsetHeight() { return 64; }
+        setPointerCapture(id) { this.pointer = id; }
+        removeClass(cls) { this.classList.remove(cls); }
         focus() { this.focused = true; }
         get nextSibling() { return this.parentElement?.children[this.parentElement.children.indexOf(this) + 1] ?? null; }
         get firstChild() { return this.children[0] ?? null; }
@@ -45,7 +53,8 @@ function setup(mobile = false) {
 		matches(selector) { return selector.startsWith(".") ? this.hasClass(selector.slice(1)) : this.tag === selector; }
 		createEl(tag, options = {}) {
 			const child = tag === "audio" ? new Audio() : new Element(tag);
-			child.cls = typeof options === "string" ? options : options.cls ?? "";
+			if (options.attr) Object.assign(child.attributes, options.attr);
+            child.cls = typeof options === "string" ? options : options.cls ?? "";
 			if (typeof options === "object" && options.text) child.textContent = options.text;
 			this.insertBefore(child, null);
 			return child;
@@ -71,14 +80,17 @@ function setup(mobile = false) {
 		querySelectorAll(selector) {
 			return this.children.flatMap(child => [...(child.matches(selector) ? [child] : []), ...child.querySelectorAll(selector)]);
 		}
-		setAttribute(name, value) { this.attributes[name] = value; }
+		getAttribute(name) { return this.attributes[name]; }
+        addClass(cls) { this.classList.add(cls); }
+        setAttribute(name, value) { this.attributes[name] = value; }
+		getAttribute(name) { return this.attributes[name] ?? null; }
 		removeAttribute(name) { delete this.attributes[name]; if (name === "src") this.src = ""; }
 		addEventListener(name, cb) {
 			if (!this.listeners.has(name)) this.listeners.set(name, new Set());
 			this.listeners.get(name).add(cb);
 		}
 		removeEventListener(name, cb) { this.listeners.get(name)?.delete(cb); }
-		emit(name) { for (const cb of this.listeners.get(name) ?? []) cb({ target: this }); }
+		emit(name, extra = {}) { for (const cb of this.listeners.get(name) ?? []) cb({ target: this, type: name, ...extra }); }
 	}
 	class Audio extends Element {
 		constructor() {
@@ -124,7 +136,11 @@ function setup(mobile = false) {
 		}
 		register(cleanup) { this.cleanups.push(cleanup); }
 		registerEvent(cleanup) { this.cleanups.push(cleanup); }
-		addCommand(command) { this.commands.set(command.id, command); }
+		registerView() {}
+        addRibbonIcon() {}
+        addCommand(command) { this.commands.set(command.id, command); }
+		registerView() {}
+		addRibbonIcon() {}
 	}
 	const body = new Element("body");
 	const workspaceEl = body.createDiv("workspace");
@@ -153,8 +169,8 @@ function setup(mobile = false) {
 		removeEventListener(event, cb) { mediaListeners.get(event)?.delete(cb); },
 	};
 	const module = { exports: {} };
-	runInNewContext(code, {
-		module, exports: module.exports, MutationObserver, document, HTMLAudioElement: Audio,
+	runInNewContext(code + "\nmodule.exports.QueueSurface = QueueSurface;", {
+		module, exports: module.exports, MutationObserver, document, HTMLAudioElement: Audio, setTimeout, clearTimeout,
 		createDiv: cls => new Element("div", cls),
 		require: () => ({ MarkdownView, ItemView: MarkdownView, Platform: {isMobile: mobile}, Modal, Menu, TFile: class {}, Plugin, setIcon: (el, icon) => { el.icon = icon; } }),
 	});
@@ -182,7 +198,7 @@ function setup(mobile = false) {
 		return body.querySelectorAll(".pp-pooled").find(audio => !audio.paused);
 	}
 	function command(id) { assert.equal(plugin.commands.get(id).checkCallback(false), true); }
-	return { observers, menus, body, workspace, plugin, leaves, note, focus, emit, embed, start, command };
+	return { queueSurface: el => new module.exports.QueueSurface(el, plugin.ctrl, plugin.app), observers, menus, body, workspace, plugin, leaves, note, focus, emit, embed, start, command };
 }
 
 test("navigation to another audio note preserves playback and moves the controls", () => {
@@ -296,28 +312,38 @@ test("non-Markdown focus hides only the controls; missing tab headers are safe",
 });
 
 
-test("previous and next follow source-note order and stop at playlist boundaries", () => {
+test("transport single taps restart or advance, and double taps nudge", async () => {
  const h = setup(); const a = h.note("Playlist.md"); h.focus(a);
  const first = h.embed(a, "app://vault/first.mp3");
  h.embed(a, "app://vault/second.mp3");
- h.embed(a, "app://vault/third.mp3");
  void first.play();
- const buttons = () => h.body.querySelectorAll(".pp-np-track-button");
- assert.equal(buttons()[0].disabled, true);
- buttons()[1].emit("click");
+ const back = h.body.querySelector(".pp-np-previous");
+ const next = h.body.querySelector(".pp-np-next");
  const audio = h.body.querySelector(".pp-pooled");
+ const settle = () => new Promise(resolve => setTimeout(resolve, 330));
+ assert.equal(back.icon, "rewind"); assert.equal(next.icon, "fast-forward");
+ audio.currentTime = 40;
+ back.emit("click"); back.emit("click");
+ assert.equal(audio.currentTime, 35);
+ await settle(); assert.equal(audio.currentTime, 35);
+ next.emit("click"); next.emit("click");
+ assert.equal(audio.currentTime, 40);
+ assert.equal(audio.src, "app://vault/first.mp3");
+ back.emit("click"); await settle();
+ assert.equal(audio.currentTime, 0); assert.equal(audio.paused, false);
+ next.emit("click"); await settle();
  assert.equal(audio.src, "app://vault/second.mp3");
- const other = h.note("Other.md"); h.focus(other);
- buttons()[1].emit("click");
- assert.equal(audio.src, "app://vault/third.mp3");
- assert.equal(buttons()[1].disabled, true);
- buttons()[1].emit("click");
- assert.equal(audio.src, "app://vault/third.mp3");
- buttons()[0].emit("click");
- assert.equal(audio.src, "app://vault/second.mp3");
- assert.equal(first.src, "app://vault/first.mp3");
+ assert.equal(next.disabled, true);
+ audio.currentTime = 118;
+ next.emit("click"); next.emit("click");
+ assert.equal(audio.currentTime, 118);
+ audio.currentTime = 2;
+ back.emit("click"); back.emit("click");
+ assert.equal(audio.currentTime, 0);
+ audio.pause(); audio.currentTime = 20;
+ back.emit("click"); await settle();
+ assert.equal(audio.currentTime, 0); assert.equal(audio.paused, true);
 });
-
 test("mobile exposes one music action and opens the album-art player", () => {
  const h = setup(true); const a = h.note("Song.md"); h.focus(a); h.start(a);
  let actions = h.body.querySelectorAll(".action");
@@ -345,7 +371,7 @@ test("native artwork is a sized JPEG data URL and preserves cover proportions", 
   naturalWidth = 1000; naturalHeight = 500;
   set src(value) { assert.equal(value, "data:image/png;base64,original"); this.onload(); }
  }
- const context = { module: {exports: {}}, require: () => ({Plugin: class {}}), FileReader, Image,
+ const context = { module: {exports: {}}, require: () => ({Plugin: class {}, ItemView: class {}}), FileReader, Image,
   document: {createElement: () => canvas} };
  runInNewContext(code + "\nmodule.exports.artwork = mediaArtwork;", context);
  const artwork = await context.module.exports.artwork({});
@@ -369,10 +395,10 @@ for (const mobile of [false, true]) {
   const bar = h.body.querySelector(".pp-now-playing");
   const controls = bar.children.filter(el => el.hasClass("clickable-icon") && !el.hasClass("pp-np-source"));
   assert.deepEqual(controls.map(el => el.attributes["aria-label"]), mobile ? [
-   "Previous audio", "Skip back 5 seconds", "Play or pause", "Skip forward 5 seconds", "Next audio",
-  ] : ["Previous audio", "Play or pause", "Next audio"]);
+   "Restart audio (double tap: back 5 seconds)", "Skip back 5 seconds", "Play or pause", "Skip forward 5 seconds", "Next audio (double tap: forward 5 seconds)",
+  ] : ["Restart audio (double tap: back 5 seconds)", "Play or pause", "Next audio (double tap: forward 5 seconds)"]);
   if (!mobile) assert.deepEqual(bar.querySelector(".pp-np-right").children.map(el => el.attributes["aria-label"]),
-   [undefined, "Skip back 5 seconds", "Playback speed", "Skip forward 5 seconds", "Open source note: Playlist.md", "Close player"]);
+   ["Queue", undefined, "Skip back 5 seconds", "Playback speed", "Skip forward 5 seconds", "Open source note: Playlist.md", "Close player"]);
  });
 }
 
@@ -381,8 +407,9 @@ test("duplicate local audio renders do not create a next track", () => {
  const first = h.embed(a, "app://vault/song.mp3?mtime=1");
  h.embed(a, "app://vault/song.mp3?mtime=2"); void first.play();
  for (const button of h.body.querySelectorAll(".pp-np-track-button")) {
-  assert.equal(button.hidden, false); assert.equal(button.disabled, true);
+  assert.equal(button.hidden, false); assert.equal(button.disabled, button.hasClass("pp-np-next"));
  }
+ assert.equal(h.plugin.ctrl.canSkipTrack(1), false);
  const stop = h.body.querySelector(".pp-np-close");
  assert.equal(stop.icon, "x"); assert.equal(stop.attributes["aria-label"], "Close player");
  stop.emit("click"); assert.equal(h.body.querySelector(".pp-pooled"), null);
@@ -400,7 +427,7 @@ test("source embeds exclude cover art and plugin audio from the single-track not
  const first = h.embed(a, `app://vault/${audioPath}?mtime=1`);
  h.embed(a, "app://vault/plugin-generated.mp3");
  void first.play();
- for (const button of h.body.querySelectorAll(".pp-np-track-button")) assert.equal(button.disabled, true);
+ for (const button of h.body.querySelectorAll(".pp-np-track-button")) assert.equal(button.disabled, button.hasClass("pp-np-next"));
 });
 
 
@@ -462,32 +489,92 @@ test("speed opens a checked selection menu and source icon precedes close", () =
 
 
 for (const mobile of [false, true]) {
- test(`native embed ownership tracks pause, rerender, switching, and quit (${mobile ? "mobile" : "desktop"})`, () => {
+ test(`embed cards share transport and restore native audio (${mobile})`, () => {
   const h = setup(mobile); const a = h.note("Source.md"); h.focus(a);
   const first = h.embed(a, "app://vault/first.mp3");
-  const second = h.embed(a, "app://vault/second.mp3");
-  void first.play();
-  const label = () => h.body.querySelector(".pp-embed-label");
-  assert.equal(label().textContent, "Playing in Persistent Player");
-  assert.equal(first.nextSibling.hasClass("pp-embed-status"), true);
-  assert.equal(first.src, "app://vault/first.mp3");
-  h.command("toggle-playback");
-  assert.equal(label().textContent, "Paused in Persistent Player");
-  h.body.querySelector(".pp-embed-open").emit("click");
-  assert.ok(h.body.querySelector(".pp-np-play").focused);
-  h.command("toggle-playback");
-  first.remove(); h.observers[0].callback();
-  assert.equal(label(), null);
-  const rerender = h.embed(a, "app://vault/first.mp3?mtime=2"); h.observers[0].callback();
-  assert.equal(rerender.nextSibling.hasClass("pp-embed-status"), true);
-  h.plugin.ctrl.skipTrack(1);
-  assert.equal(second.nextSibling.hasClass("pp-embed-status"), true);
-  assert.equal(h.body.querySelectorAll(".pp-embed-status").length, 1);
-  h.body.querySelector(".pp-np-close").emit("click");
-  assert.equal(label(), null);
-  assert.equal(second.src, "app://vault/second.mp3");
-  void second.play(); h.plugin.onunload();
-  assert.equal(label(), null);
-  assert.equal(h.observers[0].disconnected, true);
+  h.observers[0].callback();
+  const card = first.nextSibling;
+  assert.equal(card.hasClass("pp-embed-card"), true);
+  assert.equal(first.hidden, true);
+  const buttons = card.querySelectorAll("button");
+  buttons[0].emit("click");
+  assert.equal(h.plugin.ctrl.playing, true);
+  assert.equal(buttons[0].getAttribute("aria-label"), "Pause");
+  buttons[0].emit("click");
+  assert.equal(h.plugin.ctrl.playing, false);
+  buttons[2].emit("click"); buttons[1].emit("click");
+  assert.equal(h.plugin.ctrl.queue.length, 2);
+  h.plugin.onunload();
+  assert.equal(first.hidden, undefined);
+  assert.equal(card.parentElement, null);
  });
 }
+test("queue orders across notes, removes duplicates independently and advances on end", () => {
+ const h = setup(); const ctrl = h.plugin.ctrl;
+ ctrl.enqueue("app://vault/a.mp3", "A.md");
+ ctrl.enqueue("app://vault/b.mp3", "B.md", true);
+ ctrl.enqueue("app://vault/a.mp3", "A.md");
+ ctrl.moveQueued(2, -1);
+ assert.deepEqual(Array.from(ctrl.queue, t => t.note), ["B.md", "A.md", "A.md"]);
+ ctrl.removeQueued(1);
+ ctrl.playQueued();
+ assert.equal(ctrl.notePath, "B.md");
+ ctrl.active.emit("ended");
+ assert.equal(ctrl.notePath, "A.md");
+ assert.equal(ctrl.queue.length, 0);
+ ctrl.moveQueued(0, -1);
+});
+
+test("dragging across several queue rows inserts without disturbing intervening order", () => {
+ const h = setup(); const ctrl = h.plugin.ctrl;
+ for (const name of ["a", "b", "c", "d"]) ctrl.enqueue(`app://vault/${name}.mp3`, `${name}.md`);
+ ctrl.moveQueued(0, 3);
+ assert.deepEqual(Array.from(ctrl.queue, t => t.note), ["b.md", "c.md", "d.md", "a.md"]);
+ ctrl.moveQueued(3, -2);
+ assert.deepEqual(Array.from(ctrl.queue, t => t.note), ["b.md", "a.md", "c.md", "d.md"]);
+ ctrl.moveQueued(0, -1);
+ assert.equal(ctrl.queue[0].note, "b.md");
+});
+
+for (const mobile of [false, true]) {
+ test(`queue surface preserves scroll, updates seek and cleans up (${mobile})`, () => {
+  const h = setup(mobile), ctrl = h.plugin.ctrl;
+  ctrl.loadAndPlay("app://vault/a.mp3", "A.md");
+  ctrl.enqueue("app://vault/b.mp3", "B.md");
+  const el = h.body.createDiv(); const surface = h.queueSurface(el);
+  el.scrollTop = 90; el.emit("scroll");
+  assert.equal(el.style["--pp-collapse"], mobile ? "0.5" : "1");
+  ctrl.enqueue("app://vault/c.mp3", "C.md");
+  assert.equal(el.scrollTop, 90);
+  const seek = el.querySelector("input"); seek.value = "42"; seek.emit("input");
+  assert.equal(ctrl.currentTime, 42);
+  ctrl.active.emit("timeupdate"); assert.equal(seek.value, "42");
+  el.scrollTop = -10; el.emit("scroll");
+  assert.equal(el.style["--pp-collapse"], mobile ? "0" : "1");
+  surface.destroy(); ctrl.enqueue("app://vault/d.mp3", "D.md");
+  assert.equal(el.children.length, 0);
+ });
+}
+test("queue pointer cancellation never commits and touch swipes scroll instead of reorder", () => {
+ const h = setup(true), ctrl = h.plugin.ctrl;
+ for (const name of ["a", "b", "c"]) ctrl.enqueue(`app://vault/${name}.mp3`, `${name}.md`);
+ const el = h.body.createDiv(); const surface = h.queueSurface(el);
+ const rows = el.querySelectorAll(".pp-queue-row");
+ rows.forEach((row, i) => { row.bounds = {top: 100 + i * 64}; });
+ const identity = rows[0].querySelector(".pp-recording");
+ identity.emit("pointerdown", {pointerId: 1, pointerType: "mouse", button: 0, clientY: 120});
+ identity.emit("pointermove", {pointerId: 1, clientY: 250});
+ identity.emit("pointercancel", {pointerId: 1});
+ assert.equal(ctrl.queue[0].note, "a.md");
+ assert.equal(rows[0].hasClass("pp-dragging"), false);
+ identity.emit("pointerdown", {pointerId: 2, pointerType: "touch", button: 0, clientY: 200});
+ identity.emit("pointermove", {pointerId: 2, clientY: 150});
+ identity.emit("pointerup", {pointerId: 2});
+ assert.equal(el.scrollTop, 50);
+ assert.equal(ctrl.queue[0].note, "a.md");
+ identity.emit("pointerdown", {pointerId: 3, pointerType: "mouse", button: 0, clientY: 120});
+ identity.emit("pointermove", {pointerId: 3, clientY: 250});
+ identity.emit("pointerup", {pointerId: 3});
+ assert.deepEqual(Array.from(ctrl.queue, t => t.note), ["b.md", "c.md", "a.md"]);
+ surface.destroy();
+});

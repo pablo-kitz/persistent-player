@@ -2,7 +2,8 @@ import { App, MarkdownView, Menu, Modal, Platform, Plugin, setIcon, WorkspaceLea
 
 // -- Types -------------------------------------------------------------------
 
-type Evt = "play" | "pause" | "timeupdate" | "ratechange" | "change" | "metadata";
+type QueueTrack = { src: string; note: string };
+type Evt = "queue" | "play" | "pause" | "timeupdate" | "ratechange" | "change" | "metadata";
 type Cb = () => void;
 
 // -- Controller --------------------------------------------------------------
@@ -15,7 +16,28 @@ class Controller {
 	private activeNote = "";
 	private playlists = new Map<string, string[]>();
 	metadata: MediaMetadataInit = {};
-	private volume = 1;
+	queue: QueueTrack[] = [];
+ enqueue(src: string, note: string, next = false) {
+  const track = {src, note};
+  if (next) this.queue.unshift(track); else this.queue.push(track);
+  this.emit("queue");
+ }
+ removeQueued(index: number) { this.queue.splice(index, 1); this.emit("queue"); }
+ moveQueued(index: number, delta: number) {
+  const target = index + delta;
+  if (index < 0 || index >= this.queue.length || target < 0 || target >= this.queue.length) return;
+  const [track] = this.queue.splice(index, 1);
+  this.queue.splice(target, 0, track);
+  this.emit("queue");
+ }
+ playQueued(index = 0) {
+  const track = this.queue[index];
+  if (!track) return;
+  this.queue.splice(index, 1);
+  this.loadAndPlay(track.src, track.note);
+  this.emit("queue");
+ }
+ private volume = 1;
 	private rate = 1;
 	private subs = new Map<Evt, Set<Cb>>();
 
@@ -68,10 +90,12 @@ class Controller {
 	get tracks(): string[] { return this.playlists.get(this.activeNote) ?? []; }
 	get trackIndex(): number { return this.tracks.findIndex(src => audioSourceKey(src) === audioSourceKey(this.active?.src ?? "")); }
 	canSkipTrack(delta: number): boolean {
+		if (delta > 0 && this.queue.length) return true;
 		const index = this.trackIndex + delta;
 		return this.trackIndex >= 0 && index >= 0 && index < this.tracks.length;
 	}
 	skipTrack(delta: number) {
+  if (delta > 0 && this.queue.length) { this.playQueued(); return; }
 		if (this.canSkipTrack(delta)) this.loadAndPlay(this.tracks[this.trackIndex + delta], this.activeNote);
 	}
 	setMetadata(metadata: MediaMetadataInit) { this.metadata = metadata; this.emit("metadata"); }
@@ -114,7 +138,8 @@ class Controller {
 		el.addEventListener("ended", () => {
 			if (el === this.active) {
 				el.currentTime = 0;
-				this.emit("pause");
+    if (this.queue.length) this.playQueued();
+    else this.emit("pause");
 			}
 		});
 		el.addEventListener("ratechange", () => { if (el === this.active) this.emit("ratechange"); });
@@ -124,6 +149,7 @@ class Controller {
 		let set = this.subs.get(ev);
 		if (!set) { set = new Set(); this.subs.set(ev, set); }
 		set.add(cb);
+  return () => { set?.delete(cb); };
 	}
 
 	private emit(ev: Evt) {
@@ -154,8 +180,10 @@ class NowPlayingBar {
 	private previous: HTMLButtonElement | null = null;
 	private next: HTMLButtonElement | null = null;
 	private identity: HTMLElement | null = null;
+	private pendingTrackTap: ReturnType<typeof setTimeout> | null = null;
+	private pendingTrackButton: HTMLElement | null = null;
 
-	constructor(private ctrl: Controller, private app: App, plugin: Plugin) {
+	constructor(private ctrl: Controller, private app: App, plugin: Plugin, private openQueue: () => void = () => {}) {
 		ctrl.on("play", () => { this.show(); this.syncIcon(); });
 		ctrl.on("change", () => { this.show(); this.syncSource(); this.syncIcon(); this.syncProgress(); this.syncIdentity(); });
 		ctrl.on("metadata", () => { this.syncArtwork(); this.syncIdentity(); });
@@ -206,7 +234,7 @@ class NowPlayingBar {
 			this.art = bar.createDiv("pp-album-art");
 			this.syncArtwork();
 		}
-		this.previous = this.mkTrackButton(bar, "skip-back", "Previous audio", -1);
+		this.previous = this.mkTrackButton(bar, "rewind", "Restart audio (double tap: back 5 seconds)", -1);
 		if (Platform.isMobile) this.mkSkip(bar, "-5s", "Skip back 5 seconds", -5);
 		const play = (this.playBtn = bar.createDiv("clickable-icon pp-np-play"));
 		setIcon(play, this.ctrl.playing ? "pause" : "play");
@@ -215,7 +243,7 @@ class NowPlayingBar {
 		play.setAttribute("title", "Play or pause");
 		play.addEventListener("click", () => this.ctrl.toggle());
 		if (Platform.isMobile) this.mkSkip(bar, "+5s", "Skip forward 5 seconds", 5);
-		this.next = this.mkTrackButton(bar, "skip-forward", "Next audio", 1);
+		this.next = this.mkTrackButton(bar, "fast-forward", "Next audio (double tap: forward 5 seconds)", 1);
 		this.syncTracks();
 		this.identity = bar.createDiv("pp-np-identity");
 		this.syncIdentity();
@@ -227,6 +255,7 @@ class NowPlayingBar {
 		center.addEventListener("pointerdown", (e) => { this.dragging = true; this.seekTo(e.clientX); });
 
 		const right = bar.createDiv("pp-np-right");
+  actionButton(right, "list-music", "Queue", this.openQueue);
 		this.timeEl = right.createSpan({ cls: "pp-np-time" });
 		this.syncProgress();
 		if (!Platform.isMobile) this.mkSkip(right, "-5s", "Skip back 5 seconds", -5);
@@ -259,6 +288,8 @@ class NowPlayingBar {
 	}
 
 	hide() {
+		if (this.pendingTrackTap !== null) clearTimeout(this.pendingTrackTap);
+		this.pendingTrackTap = null;
 		this.mobileActions.forEach(el => el.remove());
 		this.mobileActions = [];
 		this.bar?.remove();
@@ -272,15 +303,41 @@ class NowPlayingBar {
 		button.setAttribute("aria-label", title);
 		button.setAttribute("title", title);
 		setIcon(button, icon);
-		button.addEventListener("click", () => this.ctrl.skipTrack(delta));
+		button.addEventListener("click", () => {
+			if (button.disabled) return;
+			if (this.pendingTrackButton === button && this.pendingTrackTap !== null) {
+				clearTimeout(this.pendingTrackTap);
+				this.pendingTrackTap = null;
+				this.pendingTrackButton = null;
+				this.ctrl.seekBy(delta * 5);
+				button.querySelector(".pp-nudge-feedback")?.remove();
+				const feedback = button.createSpan({
+					cls: "pp-nudge-feedback",
+					text: delta < 0 ? "−5" : "+5",
+				});
+				feedback.setAttribute("aria-hidden", "true");
+				feedback.addEventListener("animationend", () => feedback.remove());
+				return;
+			}
+			if (this.pendingTrackTap !== null) clearTimeout(this.pendingTrackTap);
+			this.pendingTrackButton = button;
+			const audio = this.ctrl.active;
+			this.pendingTrackTap = setTimeout(() => {
+				this.pendingTrackButton = null;
+				this.pendingTrackTap = null;
+				if (audio !== this.ctrl.active) return;
+				if (delta < 0) this.ctrl.seekBy(-this.ctrl.currentTime);
+				else this.ctrl.skipTrack(delta);
+			}, 300);
+		});
 		return button;
 	}
 
 	private syncTracks() {
-		for (const [button, delta] of [[this.previous, -1], [this.next, 1]] as const) {
+		for (const button of [this.previous, this.next]) {
 			if (!button) continue;
-			button.hidden = Platform.isMobile && this.ctrl.tracks.length < 2;
-			button.disabled = !this.ctrl.canSkipTrack(delta);
+			button.hidden = false;
+			button.disabled = !this.ctrl.hasActive || (button === this.next && !this.ctrl.canSkipTrack(1));
 		}
 	}
 
@@ -416,68 +473,225 @@ class PlayingTabIndicator {
 	}
 }
 
-// Shows ownership beside native embeds without touching their controls.
+// Embed cards share the persistent transport; native audio stays available on unload.
 class EmbedPlaybackIndicator {
-	private indicators = new Map<HTMLAudioElement, { row: HTMLElement; label: HTMLElement }>();
-	private observer: MutationObserver;
-	private destroyed = false;
+ private cards = new Map<HTMLAudioElement, {row: HTMLElement; button: HTMLButtonElement; hidden: boolean; src: string}>();
+ private observer: MutationObserver;
+ private destroyed = false;
+ constructor(private ctrl: Controller, private app: App, _bar: NowPlayingBar, plugin: Plugin) {
+  for (const event of ["play", "pause", "change"] as const) ctrl.on(event, () => this.sync());
+  this.observer = new MutationObserver(() => this.sync());
+  this.observer.observe(document.body, {childList: true, subtree: true});
+  plugin.register(() => this.destroy());
+ }
+ sync() {
+  if (this.destroyed) return;
+  const found = new Set<HTMLAudioElement>();
+  for (const leaf of this.app.workspace.getLeavesOfType("markdown")) {
+   if (!(leaf.view instanceof MarkdownView)) continue;
+   const note = leaf.view.file?.path ?? "";
+   for (const audio of leaf.view.containerEl.querySelectorAll("audio")) {
+    const src = audio.src || audio.currentSrc;
+    if (!src || audio.hasClass("pp-pooled")) continue;
+    found.add(audio);
+    let card = this.cards.get(audio);
+    if (card && (card.src !== src || card.row.parentElement !== audio.parentElement)) {
+     card.row.remove(); audio.hidden = card.hidden; this.cards.delete(audio); card = undefined;
+    }
+    if (!card && audio.parentElement) {
+     const row = createDiv("pp-embed-card");
+     const identity = row.createDiv("pp-recording");
+     renderRecording(identity, src, {});
+     void readTrackMetadata(this.app, src).then(metadata => { if (!this.destroyed && this.cards.get(audio)?.row === row) renderRecording(identity, src, metadata); });
+     const actions = row.createDiv("pp-card-actions");
+     const button = actionButton(actions, "play", "Play", () => {
+      if (audioSourceKey(this.ctrl.active?.src ?? "") === audioSourceKey(src)) this.ctrl.toggle();
+      else this.ctrl.loadAndPlay(src, note, Array.from(leaf.view.containerEl.querySelectorAll("audio")).map(el => el.src || el.currentSrc).filter(Boolean));
+     });
+     actionButton(actions, "list-start", "Play next", () => this.ctrl.enqueue(src, note, true));
+     actionButton(actions, "list-plus", "Add to queue", () => this.ctrl.enqueue(src, note));
+     card = {row, button, hidden: audio.hidden, src};
+     audio.hidden = true;
+     audio.parentElement.insertBefore(row, audio.nextSibling);
+     this.cards.set(audio, card);
+    }
+    if (card) {
+     const playing = this.ctrl.playing && audioSourceKey(this.ctrl.active?.src ?? "") === audioSourceKey(src);
+     const label = playing ? "Pause" : "Play";
+     if (card.button.getAttribute("aria-label") !== label) {
+      setIcon(card.button, playing ? "pause" : "play");
+      card.button.setAttribute("aria-label", label); card.button.title = label;
+     }
+    }
+   }
+  }
+  for (const [audio, card] of this.cards) if (!found.has(audio)) { card.row.remove(); audio.hidden = card.hidden; this.cards.delete(audio); }
+ }
+ destroy() {
+  this.destroyed = true; this.observer.disconnect();
+  for (const [audio, card] of this.cards) { card.row.remove(); audio.hidden = card.hidden; }
+  this.cards.clear();
+ }
+}
 
-	constructor(private ctrl: Controller, private app: App, private bar: NowPlayingBar, plugin: Plugin) {
-		for (const event of ["play", "pause", "change"] as const) ctrl.on(event, () => this.sync());
-		this.observer = new MutationObserver(() => this.sync());
-		this.observer.observe(document.body, { childList: true, subtree: true });
-		plugin.register(() => this.destroy());
-	}
-
-	sync() {
-		if (this.destroyed) return;
-		const matches = new Set<HTMLAudioElement>();
-		if (this.ctrl.active) {
-			const source = audioSourceKey(this.ctrl.active.src);
-			for (const leaf of this.app.workspace.getLeavesOfType("markdown")) {
-				if (!(leaf.view instanceof MarkdownView) || leaf.view.file?.path !== this.ctrl.notePath) continue;
-				for (const audio of leaf.view.containerEl.querySelectorAll("audio")) {
-					if (!audio.hasClass("pp-pooled") && audioSourceKey(audio.src || audio.currentSrc) === source) matches.add(audio);
-				}
-			}
-		}
-		for (const [audio, indicator] of this.indicators) {
-			if (!matches.has(audio) || indicator.row.parentElement !== audio.parentElement) {
-				indicator.row.remove();
-				this.indicators.delete(audio);
-			}
-		}
-		for (const audio of matches) {
-			let indicator = this.indicators.get(audio);
-			if (!indicator && audio.parentElement) {
-				const row = createDiv("pp-embed-status");
-				row.createSpan({ cls: "pp-embed-dot" });
-				const label = row.createSpan({ cls: "pp-embed-label" });
-				label.setAttribute("role", "status");
-				const open = row.createEl("button", { text: "Open player", cls: "pp-embed-open" });
-				open.setAttribute("type", "button");
-				const icon = open.createSpan({ cls: "pp-embed-open-icon" });
-				setIcon(icon, "arrow-up-right");
-				open.addEventListener("click", () => this.bar.openPlayer());
-				audio.parentElement.insertBefore(row, audio.nextSibling);
-				indicator = { row, label };
-				this.indicators.set(audio, indicator);
-			}
-			if (indicator) {
-				const state = this.ctrl.playing ? "Playing" : "Paused";
-				const text = `${state} in Persistent Player`;
-				if (indicator.label.textContent !== text) indicator.label.textContent = text;
-				indicator.row.setAttribute("data-state", state.toLowerCase());
-			}
-		}
-	}
-
-	destroy() {
-		this.destroyed = true;
-		this.observer.disconnect();
-		for (const indicator of this.indicators.values()) indicator.row.remove();
-		this.indicators.clear();
-	}
+function actionButton(parent: HTMLElement, icon: string, label: string, action: () => void) {
+ const button = parent.createEl("button", {cls: "clickable-icon", attr: {type: "button", "aria-label": label, title: label}});
+ setIcon(button, icon); button.addEventListener("click", action); return button;
+}
+function renderRecording(parent: HTMLElement, src: string, metadata: MediaMetadataInit) {
+ parent.replaceChildren();
+ const art = parent.createDiv("pp-cover-small");
+ if (metadata.artwork?.[0]) art.createEl("img", {attr: {src: metadata.artwork[0].src, alt: ""}});
+ else setIcon(art, "music");
+ const text = parent.createDiv("pp-recording-text");
+ text.createDiv({cls: "pp-track-title", text: metadata.title || audioFilename(src)});
+ for (const value of [metadata.artist, metadata.album]) if (value) text.createDiv({cls: "pp-track-detail", text: value});
+}
+async function readTrackMetadata(app: App, src: string): Promise<MediaMetadataInit> {
+ try {
+  const file = app.vault.getFiles().find(file => audioSourceKey(app.vault.getResourcePath(file)) === audioSourceKey(src));
+  // Avoid fetching remote recordings merely to display an embed.
+  if (!file) return {};
+  const {parseBlob} = await import("music-metadata");
+  const tags = (await parseBlob(new Blob([await app.vault.readBinary(file)]))).common;
+  const result: MediaMetadataInit = {title: tags.title, artist: tags.artist, album: tags.album};
+  const picture = tags.picture?.[0];
+  if (picture) try { result.artwork = [await mediaArtwork(new Blob([new Uint8Array(picture.data)], {type: picture.format}))]; } catch { /* Keep text tags. */ }
+  return result;
+ } catch { return {}; }
+}
+const QUEUE_VIEW = "persistent-player-queue";
+class QueueSurface {
+ private off: (() => void)[] = [];
+ private head!: HTMLElement;
+ private dragCleanups: (() => void)[] = [];
+ private metadataCache = new Map<string, Promise<MediaMetadataInit>>();
+ private playhead?: HTMLInputElement;
+ private time?: HTMLElement;
+ private scroll = () => {
+  // The compensating spacer keeps the scroll range stable during collapse.
+  const progress = Platform.isMobile ? Math.max(0, Math.min(1, this.container.scrollTop / 180)) : 1;
+  this.container.style.setProperty("--pp-collapse", String(progress));
+ };
+ constructor(private container: HTMLElement, private ctrl: Controller, private app: App) {
+  for (const event of ["queue", "change", "metadata", "play", "pause"] as const) this.off.push(ctrl.on(event, () => this.render()));
+  this.off.push(ctrl.on("timeupdate", () => this.syncProgress()));
+  container.addEventListener("scroll", this.scroll, {passive: true});
+  this.render();
+ }
+ private syncProgress() {
+  const duration = this.ctrl.duration();
+  if (this.playhead) {
+   this.playhead.max = String(Number.isFinite(duration) ? duration : 0);
+   this.playhead.value = String(this.ctrl.currentTime);
+   this.playhead.disabled = !Number.isFinite(duration) || duration <= 0;
+  }
+  if (this.time) this.time.textContent = `${fmt(this.ctrl.currentTime)} / ${fmt(duration)}`;
+ }
+ render() {
+  const el = this.container;
+  const scrollTop = el.scrollTop;
+  this.dragCleanups.forEach(cleanup => cleanup()); this.dragCleanups = [];
+  this.playhead = undefined; this.time = undefined;
+  el.replaceChildren(); el.addClass("pp-queue");
+  this.head = el.createDiv("pp-queue-playing");
+  if (this.ctrl.active) {
+   const identity = this.head.createDiv("pp-recording");
+   renderRecording(identity, this.ctrl.active.src, this.ctrl.metadata);
+   const controls = this.head.createDiv("pp-queue-transport");
+   actionButton(controls, "rotate-ccw", "Back 5 seconds", () => this.ctrl.seekBy(-5));
+   actionButton(controls, this.ctrl.playing ? "pause" : "play", this.ctrl.playing ? "Pause" : "Play", () => this.ctrl.toggle());
+   actionButton(controls, "skip-forward", "Next track", () => this.ctrl.skipTrack(1));
+   this.playhead = controls.createEl("input", {attr: {type: "range", min: "0", step: "0.1", "aria-label": "Playback position"}});
+   this.playhead.addEventListener("input", () => this.ctrl.seek(Number(this.playhead?.value)));
+   this.time = controls.createSpan("pp-np-time");
+   this.syncProgress();
+   if (Platform.isMobile) el.createDiv("pp-collapse-spacer");
+  } else this.head.createEl("p", {text: "Choose a recording to start listening."});
+  if (!this.ctrl.queue.length) el.createEl("p", {text: "Add audio recordings using their queue controls."});
+  this.ctrl.queue.forEach((track, index) => {
+   const row = el.createDiv("pp-queue-row");
+   const identity = row.createDiv("pp-recording");
+   const paint = (metadata: MediaMetadataInit) => {
+    renderRecording(identity, track.src, metadata);
+    const art = identity.querySelector<HTMLElement>(".pp-cover-small")!;
+    const play = actionButton(art, "play", `Play ${metadata.title || audioFilename(track.src)}`, () => this.ctrl.playQueued(index));
+    play.addClass("pp-cover-play");
+   };
+   paint({});
+   let metadata = this.metadataCache.get(track.src);
+   if (!metadata) { metadata = readTrackMetadata(this.app, track.src); this.metadataCache.set(track.src, metadata); }
+   void metadata.then(value => { if (el.contains(row)) paint(value); });
+   identity.title = "Drag to reorder; on touch, hold then drag";
+   identity.tabIndex = 0;
+   identity.setAttribute("aria-label", `Reorder ${audioFilename(track.src)}. Use Alt and arrow keys to move.`);
+   identity.addEventListener("keydown", event => {
+    if (event.altKey && (event.key === "ArrowUp" || event.key === "ArrowDown")) {
+     event.preventDefault(); this.ctrl.moveQueued(index, event.key === "ArrowUp" ? -1 : 1);
+     const target = Math.max(0, Math.min(this.ctrl.queue.length - 1, index + (event.key === "ArrowUp" ? -1 : 1)));
+     el.querySelectorAll<HTMLElement>(".pp-queue-row .pp-recording")[target]?.focus();
+    }
+   });
+   let pointer: number | null = null;
+   let target = index;
+   let dragging = false;
+   let startY = 0;
+   let lastY = 0;
+   let hold: ReturnType<typeof setTimeout> | undefined;
+   const cancelHold = () => { if (hold !== undefined) clearTimeout(hold); hold = undefined; };
+   this.dragCleanups.push(cancelHold);
+   identity.addEventListener("pointerdown", event => {
+    if (event.button !== 0 || (event.target as HTMLElement).closest("button")) return;
+    pointer = event.pointerId; target = index;
+    startY = lastY = event.clientY;
+    identity.setPointerCapture(pointer);
+    dragging = event.pointerType !== "touch";
+    if (dragging) row.addClass("pp-dragging");
+    else hold = setTimeout(() => { dragging = true; row.addClass("pp-dragging"); }, 350);
+   });
+   identity.addEventListener("pointermove", event => {
+    if (event.pointerId !== pointer) return;
+    if (!dragging) {
+     if (Math.abs(event.clientY - startY) > 8) cancelHold();
+     el.scrollTop += lastY - event.clientY; lastY = event.clientY;
+     return;
+    }
+    const bounds = el.getBoundingClientRect();
+    if (event.clientY < bounds.top + 60) el.scrollTop -= 12;
+    if (event.clientY > bounds.bottom - 60) el.scrollTop += 12;
+    const rows = Array.from(el.querySelectorAll<HTMLElement>(".pp-queue-row"));
+    target = rows.reduce((best, candidate, i) => Math.abs(event.clientY - (candidate.getBoundingClientRect().top + candidate.offsetHeight / 2)) < Math.abs(event.clientY - (rows[best].getBoundingClientRect().top + rows[best].offsetHeight / 2)) ? i : best, 0);
+    rows.forEach((candidate, i) => candidate.classList.toggle("pp-drop-target", i === target && i !== index));
+   });
+   const end = (event: PointerEvent) => {
+    if (event.pointerId !== pointer) return;
+    cancelHold();
+    const wasDragging = dragging; dragging = false;
+    pointer = null; row.removeClass("pp-dragging");
+    el.querySelectorAll(".pp-drop-target").forEach(item => item.classList.remove("pp-drop-target"));
+    if (event.type === "pointerup" && wasDragging && target !== index) this.ctrl.moveQueued(index, target - index);
+   };
+   identity.addEventListener("pointerup", end);
+   identity.addEventListener("pointercancel", end);
+   identity.addEventListener("lostpointercapture", end);
+   actionButton(row, "x", "Remove from queue", () => this.ctrl.removeQueued(index));
+  });
+  el.scrollTop = scrollTop; this.scroll();
+ }
+ destroy() {
+  this.dragCleanups.forEach(cleanup => cleanup()); this.metadataCache.clear();
+  this.off.forEach(off => off()); this.container.removeEventListener("scroll", this.scroll);
+  this.container.replaceChildren();
+ }
+}
+class QueueView extends ItemView {
+ private surface?: QueueSurface;
+ constructor(leaf: WorkspaceLeaf, private ctrl: Controller) { super(leaf); }
+ getViewType() { return QUEUE_VIEW; }
+ getDisplayText() { return "Player queue"; }
+ getIcon() { return "list-music"; }
+ async onOpen() { this.surface = new QueueSurface(this.contentEl, this.ctrl, this.app); }
+ async onClose() { this.surface?.destroy(); }
 }
 
 // -- Plugin ------------------------------------------------------------------
@@ -492,7 +706,10 @@ export default class PersistentPlayerPlugin extends Plugin {
 	onload() {
 		this.ctrl = new Controller();
 		this.media = new SystemMedia(this.ctrl, this.app);
-		this.bar = new NowPlayingBar(this.ctrl, this.app, this);
+		this.bar = new NowPlayingBar(this.ctrl, this.app, this, () => { void this.openQueue(); });
+  this.registerView(QUEUE_VIEW, leaf => new QueueView(leaf, this.ctrl));
+  this.addCommand({id: "open-queue", name: "Open player queue", callback: () => { void this.openQueue(); }});
+  this.addRibbonIcon("list-music", "Open player queue", () => { void this.openQueue(); });
 		this.tabs = new PlayingTabIndicator(this.ctrl, this.app);
 		this.embeds = new EmbedPlaybackIndicator(this.ctrl, this.app, this.bar, this);
 
@@ -581,6 +798,17 @@ export default class PersistentPlayerPlugin extends Plugin {
 		});
 	}
 
+ private async openQueue() {
+  if (Platform.isMobile) {
+   const modal = new Modal(this.app);
+   modal.setTitle("Player queue");
+   const surface = new QueueSurface(modal.contentEl, this.ctrl, this.app);
+   modal.onClose = () => surface.destroy();
+   this.register(() => modal.close()); modal.open(); return;
+  }
+  const leaf = this.app.workspace.getLeavesOfType(QUEUE_VIEW)[0] ?? this.app.workspace.getRightLeaf(false);
+  if (leaf) { await leaf.setViewState({type: QUEUE_VIEW, active: true}); await this.app.workspace.revealLeaf(leaf); }
+ }
 	onunload() {
 		this.embeds?.destroy();
 		this.media?.destroy();
