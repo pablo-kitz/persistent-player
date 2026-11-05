@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.0.10
+
+- Add semitone and cent tuning through the playback speed menu.
+- Save tuning in embed display text, such as `![[song.mp3|detune=-35]]`, preserving existing labels.
+- Restore tuning before playback and support rapid adjustments and legacy tuning comments.
+- Tuning uses tape-style speed changes; tempo changes with pitch.
+
 ## 1.0.7
 
 - Add a shared playback queue and embed controls.

@@ -129,7 +129,9 @@ function setup(mobile = false) {
         el.addEventListener("click", callback); return el;
     };
 	class Plugin {
-		constructor(app) { this.app = app; this.cleanups = []; this.commands = new Map(); }
+  loadData() { return Promise.resolve(null); }
+  saveData(data) { this.savedData = data; return Promise.resolve(); }
+		constructor(app) { this.app = app; this.app.vault = {getFiles: () => [], getAbstractFileByPath: () => null}; this.cleanups = []; this.commands = new Map(); }
 		registerDomEvent(target, event, cb) {
 			target.addEventListener(event, cb);
 			this.cleanups.push(() => target.removeEventListener(event, cb));
@@ -428,7 +430,7 @@ test("source embeds exclude cover art and plugin audio from the single-track not
   getFileCache: () => ({embeds: [{link: audioPath}, {link: coverPath}]}),
   getFirstLinkpathDest: link => ({path: link, extension: link.split(".").pop()}),
  };
- h.plugin.app.vault = {getAbstractFileByPath: () => null, getFiles: () => [], getResourcePath: file => `app://vault/${file.path}`};
+ h.plugin.app.vault = {getAbstractFileByPath: () => null, getFiles: () => [], getAbstractFileByPath: () => null, getResourcePath: file => `app://vault/${file.path}`};
  const first = h.embed(a, `app://vault/${audioPath}?mtime=1`);
  h.embed(a, "app://vault/plugin-generated.mp3");
  void first.play();
@@ -487,7 +489,7 @@ test("speed opens a checked selection menu and source icon precedes close", () =
  speed.emit("click");
  assert.equal(speed.textContent, "1x");
  const menu = h.menus[0];
- assert.deepEqual(menu.items.map(item => item.title), ["0.5×", "0.75×", "1×", "1.25×", "1.5×", "2×"]);
+ assert.deepEqual(menu.items.slice(0, 6).map(item => item.title), ["0.5×", "0.75×", "1×", "1.25×", "1.5×", "2×"]);
  assert.equal(menu.items[2].checked, true);
  menu.items[4].click();
  assert.equal(speed.textContent, "1.5x");
@@ -645,3 +647,86 @@ for (const mobile of [false, true]) {
   surface.destroy();
  });
 }
+
+ test("tuning follows recording sources and persists cents", async () => {
+  const h = setup(), ctrl = h.plugin.ctrl;
+  await Promise.resolve();
+  ctrl.loadAndPlay("app://vault/a.mp3?mtime=1", "A.md");
+  ctrl.setDetune(-35);
+  assert.ok(Math.abs(ctrl.active.playbackRate - 2 ** (-35 / 1200)) < 1e-10);
+  assert.equal(ctrl.active.preservesPitch, false);
+  ctrl.loadAndPlay("app://vault/b.mp3", "A.md");
+  assert.equal(ctrl.detune, 0);
+  assert.equal(ctrl.active.preservesPitch, true);
+  ctrl.loadAndPlay("app://vault/a.mp3?mtime=2", "Other.md");
+  assert.equal(ctrl.detune, -35);
+  ctrl.setRate(0.75);
+  assert.ok(Math.abs(ctrl.active.playbackRate - 0.75 * 2 ** (-35 / 1200)) < 1e-10);
+  await Promise.resolve(); await Promise.resolve();
+  assert.equal(h.plugin.savedData.detunes["app://vault/a.mp3"], -35);
+  ctrl.restoreDetunes({"app://vault/c.mp3": 125});
+  ctrl.loadAndPlay("app://vault/c.mp3", "C.md");
+  assert.equal(ctrl.detune, 125);
+  ctrl.setDetune(0);
+  assert.equal(ctrl.active.playbackRate, 0.75);
+ });
+
+test("embed display tuning preserves labels, targets and surrounding Markdown", () => {
+ const context = {module: {exports: {}}, require: () => ({Plugin: class {}, ItemView: class {}})};
+ runInNewContext(code + "\nmodule.exports.helpers = {replaceEmbedTuning, embedTuningValue};", context);
+ const {replaceEmbedTuning, embedTuningValue} = context.module.exports.helpers;
+ const update = (original, cents, tail = " after\n") => {
+  const content = `Before\n${original}${tail}`;
+  const embed = {original, position: {start: {offset: 7}, end: {offset: 7 + original.length}}};
+  return replaceEmbedTuning(content, [embed], cents);
+ };
+ assert.equal(update("![[song.mp3]]", -35), "Before\n![[song.mp3|detune=-35]] after\n");
+ assert.equal(update("![[song.mp3|My song]]", 120), "Before\n![[song.mp3|My song detune=120]] after\n");
+ assert.equal(update("![[song.mp3|My song detune=-35]]", 0), "Before\n![[song.mp3|My song detune=0]] after\n");
+ assert.equal(update("![My song](folder/song%20name.mp3)", -35), "Before\n![My song detune=-35](folder/song%20name.mp3) after\n");
+ assert.equal(update("![[song.mp3]]", 50, " <!-- persistent-player:detune=-35 --> prose"), "Before\n![[song.mp3|detune=50]] prose");
+ assert.equal(embedTuningValue("![[renamed song.mp3|detune=-35]]"), -35);
+ assert.equal(embedTuningValue("![Song detune=+120](song.mp3)"), 120);
+ assert.equal(embedTuningValue("![[song.mp3]]", " <!-- persistent-player:detune=-35 -->"), -35);
+ assert.equal(embedTuningValue("![[song.mp3|detune=0]]", " <!-- persistent-player:detune=-35 -->"), 0);
+ for (const value of ["garbage", "1300", "2.5", "Infinity"]) assert.equal(embedTuningValue(`![[song.mp3|detune=${value}]]`), 0);
+ const original = "![[song.mp3]]";
+ assert.throws(() => replaceEmbedTuning("Changed " + original, [{original, position: {start: {offset: 0}, end: {offset: original.length}}}], 0), /Embed changed/);
+ const second = "![[other.mp3|Other]]";
+ const both = original + "\n" + second;
+ const refs = [original, second].map((original, i) => ({original, position: {start: {offset: i ? both.indexOf(second) : 0}, end: {offset: (i ? both.indexOf(second) : 0) + original.length}}}));
+ assert.equal(replaceEmbedTuning(both, refs, 25), "![[song.mp3|detune=25]]\n![[other.mp3|Other detune=25]]");
+});
+
+test("async embed tuning is applied before playback and an obsolete read cannot switch songs", async () => {
+ const h = setup(), ctrl = h.plugin.ctrl;
+ const reads = [];
+ ctrl.readTuning = () => new Promise(resolve => reads.push(resolve));
+ ctrl.loadAndPlay("app://vault/a.mp3", "A.md");
+ ctrl.loadAndPlay("app://vault/b.mp3", "B.md");
+ reads[1](50); await Promise.resolve();
+ assert.equal(ctrl.notePath, "B.md");
+ assert.equal(ctrl.detune, 50);
+ reads[0](-35); await Promise.resolve();
+ assert.equal(ctrl.notePath, "B.md");
+ assert.equal(ctrl.detune, 50);
+});
+
+test("rapid tuning saves work before Obsidian refreshes embed positions", async () => {
+ class TFile {}
+ const file = new TFile();
+ const original = "![[song.mp3]]";
+ let content = original + "\n" + original;
+ const refs = [0, original.length + 1].map(offset => ({original, link: "song.mp3", position: {start: {offset}, end: {offset: offset + original.length}}}));
+ const app = {
+  vault: {getAbstractFileByPath: () => file, getResourcePath: () => "app://vault/song.mp3", cachedRead: async () => content, process: async (_file, callback) => {content = callback(content);}},
+  metadataCache: {getFileCache: () => ({embeds: refs}), getFirstLinkpathDest: () => file},
+ };
+ const context = {module: {exports: {}}, require: () => ({TFile, Plugin: class {}, ItemView: class {}})};
+ runInNewContext(code + "\nmodule.exports.EmbedTuning = EmbedTuning;", context);
+ const tuning = new context.module.exports.EmbedTuning(app);
+ await tuning.save("app://vault/song.mp3", "Note.md", -3);
+ await tuning.save("app://vault/song.mp3", "Note.md", -35);
+ assert.equal(content, "![[song.mp3|detune=-35]]\n![[song.mp3|detune=-35]]");
+ assert.equal(await tuning.read("app://vault/song.mp3", "Note.md"), -35);
+});

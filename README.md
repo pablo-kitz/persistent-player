@@ -49,3 +49,15 @@ The source keeps `obsidian` external during the esbuild bundle. The optional spe
 ## License
 
 MIT
+
+### Recording tuning
+
+Open the speed menu and choose Detune. Semitones (-12 to +12) and cents (-99 to +99) are saved automatically in the recording's embed display text in the source note:
+
+```markdown
+![[song.mp3|detune=-35]]
+```
+
+The `detune` parameter stores total cents. Existing display text is preserved, for example `![[song.mp3|My song detune=-35]]`. Markdown embeds use `![My song detune=-35](song.mp3)`. Positive raises pitch. Reset writes zero. Tuning travels with the note and stays inside the embed when Obsidian updates its link after a rename. Different notes can use different tuning; repeated embeds of the same recording within one note share the correction. Copying the embed includes its tuning. Older tuning comments remain readable and are converted to display text the next time you adjust tuning. Recordings without a resolvable note embed still use plugin data as a fallback.
+
+Tuning changes tempo too, like tape speed. At nonzero tuning the speed control also affects pitch; use 1x for the specified correction.

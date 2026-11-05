@@ -1,4 +1,4 @@
-import { App, MarkdownView, Menu, Modal, Platform, Plugin, setIcon, WorkspaceLeaf, ItemView, TFile } from "obsidian";
+import { App, MarkdownView, Menu, Modal, Notice, Platform, Plugin, setIcon, WorkspaceLeaf, ItemView, TFile } from "obsidian";
 
 // -- Types -------------------------------------------------------------------
 
@@ -11,6 +11,29 @@ type Cb = () => void;
 // moves the controls; starting another embed changes the active audio.
 
 class Controller {
+ readTuning?: (src: string, note: string) => Promise<number | null> | null;
+ private loadRevision = 0;
+ private detunes: Record<string, number> = {};
+ constructor(private saveDetunes: (values: Record<string, number>) => void = () => {}, private sourceKey: (src: string) => string = audioSourceKey) {}
+ restoreDetunes(values: Record<string, number>) {
+  this.detunes = {...values, ...this.detunes};
+  this.applyRate();
+ }
+ get detune(): number { return this.detunes[this.sourceKey(this.active?.src ?? "")] ?? 0; }
+ setDetune(cents: number) {
+  if (!this.active || !Number.isFinite(cents)) return;
+  this.detunes[this.sourceKey(this.active.src)] = Math.max(-1299, Math.min(1299, Math.round(cents)));
+  this.applyRate();
+  this.saveDetunes({...this.detunes});
+ }
+ private applyRate() {
+  if (this.active) {
+   this.active.preservesPitch = this.detune === 0;
+   this.active.playbackRate = this.rate * Math.pow(2, this.detune / 1200);
+  }
+  this.emit("ratechange");
+ }
+
 	/** notePath -> audio element (keeps loaded state, position, etc.). */
 	private pool = new Map<string, HTMLAudioElement>();
 	private activeNote = "";
@@ -60,7 +83,17 @@ class Controller {
 	duration(): number { return this.active?.duration ?? 0; }
 
 	/** Start playing a new src in a note. Creates or reuses an audio element. */
-	loadAndPlay(src: string, note: string, sources?: string[]) {
+ loadAndPlay(src: string, note: string, sources?: string[]) {
+  const revision = ++this.loadRevision;
+  const tuning = this.readTuning?.(src, note);
+  if (!tuning) { this.startTrack(src, note, sources); return; }
+  void tuning.then(cents => {
+   if (revision !== this.loadRevision) return;
+   if (cents !== null) this.detunes[this.sourceKey(src)] = cents;
+   this.startTrack(src, note, sources);
+  }).catch(error => { console.error("Could not read embed tuning", error); new Notice("Could not read recording tuning. Try playing the recording again."); });
+ }
+ private startTrack(src: string, note: string, sources?: string[]) {
 		if (sources) {
 			const unique = new Map<string, string>();
 			for (const source of sources) {
@@ -81,8 +114,8 @@ class Controller {
 
 		if (el.src !== src) el.src = src;
 		el.volume = this.volume;
-		el.playbackRate = this.rate;
 		this.activeNote = note;
+		this.applyRate();
 		this.emit("change");
 		void el.play();
 	}
@@ -118,12 +151,12 @@ class Controller {
 
 	setRate(r: number) {
 		this.rate = r;
-		if (this.active) this.active.playbackRate = r;
-		this.emit("ratechange");
+		this.applyRate();
 	}
 
 	/** Remove a note's audio from the pool (close button). */
 	clearNote(note: string) {
+  ++this.loadRevision;
 		const el = this.pool.get(note);
 		if (el) { el.pause(); el.remove(); this.pool.delete(note); }
 		if (this.activeNote === note) this.activeNote = "";
@@ -157,6 +190,7 @@ class Controller {
 	}
 
 	destroy() {
+  ++this.loadRevision;
 		for (const el of this.pool.values()) { el.pause(); el.remove(); }
 		this.pool.clear();
 		this.subs.clear();
@@ -341,7 +375,7 @@ class NowPlayingBar {
 		const right = bar.createDiv("pp-np-right");
 		this.timeEl = right.createSpan({ cls: "pp-np-time" });
 		this.syncProgress();
-        this.rateEl = speedButton(right, this.ctrl);
+        this.rateEl = speedButton(right, this.ctrl, this.app);
         this.sourceEl = actionButton(right, "external-link", "Open source note", () => {
             if (this.ctrl.notePath) void this.app.workspace.openLinkText(this.ctrl.notePath, "");
         });
@@ -553,12 +587,35 @@ function syncPlaybackButton(button: HTMLElement, playing: boolean) {
  setIcon(button, playing ? "pause" : "play");
  button.setAttribute("aria-label", label);
 }
-function speedButton(parent: HTMLElement, ctrl: Controller) {
+function speedButton(parent: HTMLElement, ctrl: Controller, app: App) {
  const button = actionButton(parent, null, "Playback speed", () => {
   const menu = new Menu();
   for (const rate of [0.5, 0.75, 1, 1.25, 1.5, 2]) {
    menu.addItem(item => item.setTitle(`${rate}\u00d7`).setChecked(ctrl.playbackRate === rate).onClick(() => ctrl.setRate(rate)));
   }
+  menu.addItem(item => item.setTitle(`Detune: ${ctrl.detune > 0 ? "+" : ""}${ctrl.detune} cents...`).onClick(() => {
+   const modal = new Modal(app);
+   modal.contentEl.createEl("h2", {text: "Recording tuning"});
+   modal.contentEl.createEl("p", {text: "Saved automatically in this recording's embed display text in the source note. Positive raises pitch; negative lowers it. Tuning also changes speed. At nonzero tuning, the speed control changes pitch too."});
+   const source = ctrl.active?.src;
+   const sourceNote = ctrl.notePath;
+   const field = (name: string, value: number, min: number, max: number) => {
+    const label = modal.contentEl.createEl("label", {text: name});
+    const input = label.createEl("input", {type: "number"});
+    input.value = String(value); input.min = String(min); input.max = String(max); input.step = "1";
+    input.setAttribute("aria-label", name);
+    return input;
+   };
+   const semitones = field("Semitones", Math.trunc(ctrl.detune / 100), -12, 12);
+   const cents = field("Cents", ctrl.detune % 100, -99, 99);
+   const update = () => {
+    if (ctrl.active?.src !== source || ctrl.notePath !== sourceNote) { modal.close(); return; }
+    if (semitones.value && cents.value && semitones.checkValidity() && cents.checkValidity()) ctrl.setDetune(Number(semitones.value) * 100 + Number(cents.value));
+   };
+   semitones.addEventListener("input", update); cents.addEventListener("input", update);
+   actionButton(modal.contentEl, "rotate-ccw", "Reset tuning", () => { semitones.value = cents.value = "0"; update(); });
+   modal.open();
+  }));
   const bounds = button.getBoundingClientRect();
   menu.showAtPosition({x: bounds.left, y: bounds.bottom + 4});
  });
@@ -640,7 +697,7 @@ class QueueSurface {
    this.time = controls.createSpan("pp-np-time");
    this.syncProgress();
    if (Platform.isMobile) {
-    speedButton(controls, this.ctrl);
+    speedButton(controls, this.ctrl, this.app);
     const stop = actionButton(controls, "square", "Stop playback", () => { this.ctrl.clearNote(this.ctrl.notePath); this.close(); });
     stop.addClass("pp-np-close");
    }
@@ -735,6 +792,83 @@ class QueueView extends ItemView {
  async onClose() { this.surface?.destroy(); }
 }
 
+// Display text carries tuning without changing the audio link target.
+const TUNING_COMMENT = /^ *<!-- persistent-player:detune=(-?\d+) -->/;
+const TUNING_PARAMETER = /(?:^|\s)detune=([^\s]+)/;
+function embedDisplay(original: string): {prefix: string; text: string; suffix: string} {
+ if (original.startsWith("![[") && original.endsWith("]]")) {
+  const body = original.slice(3, -2);
+  const pipe = body.indexOf("|");
+  return {prefix: `![[${pipe < 0 ? body : body.slice(0, pipe)}|`, text: pipe < 0 ? "" : body.slice(pipe + 1), suffix: "]]"};
+ }
+ const markdown = /^!\[((?:\\.|[^\]\\])*)\](\([\s\S]*\))$/.exec(original);
+ if (markdown) return {prefix: "![", text: markdown[1], suffix: `]${markdown[2]}`};
+ throw new Error("Unsupported audio embed syntax");
+}
+function embedTuningValue(original: string, tail = ""): number {
+ const parameter = TUNING_PARAMETER.exec(embedDisplay(original).text);
+ const raw = parameter?.[1] ?? TUNING_COMMENT.exec(tail)?.[1] ?? "0";
+ const value = /^[+-]?\d+$/.test(raw) ? Number(raw) : 0;
+ return Number.isFinite(value) && Math.abs(value) <= 1299 ? value : 0;
+}
+function replaceEmbedTuning(content: string, embeds: {original: string; position: {end: {offset: number}; start: {offset: number}}}[], cents: number): string {
+ for (const embed of [...embeds].sort((a, b) => b.position.start.offset - a.position.start.offset)) {
+  const start = embed.position.start.offset, end = embed.position.end.offset;
+  if (content.slice(start, end) !== embed.original) throw new Error("Embed changed before tuning could be saved");
+  const display = embedDisplay(embed.original);
+  const label = display.text.replace(/(?:^|\s)detune=[^\s]+/g, "").trimEnd();
+  const replacement = `${display.prefix}${label}${label ? " " : ""}detune=${cents}${display.suffix}`;
+  const tail = content.slice(end);
+  const old = TUNING_COMMENT.exec(tail)?.[0] ?? "";
+  content = content.slice(0, start) + replacement + tail.slice(old.length);
+ }
+ return content;
+}
+type TuningEmbed = {original: string; position: {start: {offset: number}; end: {offset: number}}};
+class EmbedTuning {
+ private lastEdits = new Map<string, {src: string; content: string; embeds: TuningEmbed[]}>();
+ constructor(private app: App) {}
+ private find(src: string, note: string) {
+  const file = this.app.vault.getAbstractFileByPath(note);
+  if (!(file instanceof TFile)) return null;
+  const embeds = this.app.metadataCache.getFileCache(file)?.embeds?.filter(embed => {
+   const target = this.app.metadataCache.getFirstLinkpathDest(embed.link.split("#")[0], note);
+   return audioSourceKey(target ? this.app.vault.getResourcePath(target) : embed.link) === audioSourceKey(src);
+  }) ?? [];
+  return embeds.length ? {file, embeds} : null;
+ }
+ canStore(src: string, note: string) { return this.find(src, note) !== null; }
+ read(src: string, note: string): Promise<number | null> | null {
+  const match = this.find(src, note);
+  if (!match) return null;
+  return this.app.vault.cachedRead(match.file).then(content => {
+   const recent = this.lastEdits.get(note);
+   const embed = recent?.src === audioSourceKey(src) && recent.content === content ? recent.embeds[0] : match.embeds[0];
+   if (content.slice(embed.position.start.offset, embed.position.end.offset) !== embed.original) throw new Error("Stale embed position");
+   return embedTuningValue(embed.original, content.slice(embed.position.end.offset));
+  });
+ }
+ async save(src: string, note: string, cents: number) {
+  const match = this.find(src, note);
+  if (!match) throw new Error("Source embed no longer exists");
+  await this.app.vault.process(match.file, content => {
+   const recent = this.lastEdits.get(note);
+   const embeds = recent?.src === audioSourceKey(src) && recent.content === content ? recent.embeds : match.embeds;
+   const updated = replaceEmbedTuning(content, embeds, cents);
+   let shift = 0;
+   const next = [...embeds].sort((a, b) => a.position.start.offset - b.position.start.offset).map(embed => {
+    const original = replaceEmbedTuning(embed.original, [{original: embed.original, position: {start: {offset: 0}, end: {offset: embed.original.length}}}], cents);
+    const start = embed.position.start.offset + shift;
+    const removedComment = TUNING_COMMENT.exec(content.slice(embed.position.end.offset))?.[0].length ?? 0;
+    shift += original.length - embed.original.length - removedComment;
+    return {original, position: {start: {offset: start}, end: {offset: start + original.length}}};
+   });
+   this.lastEdits.set(note, {src: audioSourceKey(src), content: updated, embeds: next});
+   return updated;
+  });
+ }
+}
+
 // -- Plugin ------------------------------------------------------------------
 
 export default class PersistentPlayerPlugin extends Plugin {
@@ -745,7 +879,41 @@ export default class PersistentPlayerPlugin extends Plugin {
 	private embeds!: EmbedPlaybackIndicator;
 
 	onload() {
-		this.ctrl = new Controller();
+		let data: Record<string, unknown> = {};
+  let ready = false;
+  let pending: Record<string, number> | null = null;
+  let writes = Promise.resolve();
+  const embedTuning = new EmbedTuning(this.app);
+  const persist = (detunes: Record<string, number>) => {
+   const src = this.ctrl.active?.src;
+   if (src && embedTuning.canStore(src, this.ctrl.notePath)) {
+    const cents = this.ctrl.detune;
+    const note = this.ctrl.notePath;
+    writes = writes.then(() => embedTuning.save(src, note, cents)).catch(error => {
+     console.error("Could not save embed tuning", error);
+     new Notice("Could not save recording tuning in the note. Please try again.");
+    });
+    return;
+   }
+   pending = detunes;
+   if (!ready) return;
+   writes = writes.then(() => this.saveData({...data, detunes})).catch(error => console.error("Could not save recording tuning", error));
+  };
+  this.ctrl = new Controller(persist, src => {
+   const file = this.app.vault.getFiles().find(file => audioSourceKey(this.app.vault.getResourcePath(file)) === audioSourceKey(src));
+   return file ? `vault:${file.path}` : audioSourceKey(src);
+  });
+  this.ctrl.readTuning = (src, note) => embedTuning.read(src, note);
+  void this.loadData().then((stored: Record<string, unknown> | null) => {
+   data = stored ?? {};
+   const detunes: Record<string, number> = {};
+   if (data.detunes && typeof data.detunes === "object") {
+    for (const [key, value] of Object.entries(data.detunes)) if (typeof value === "number" && Number.isFinite(value) && Math.abs(value) <= 1299) detunes[key] = value;
+   }
+   this.ctrl.restoreDetunes(detunes);
+   ready = true;
+   if (pending) persist({...detunes, ...pending});
+  }).catch(error => console.error("Could not load recording tuning", error));
 		this.media = new SystemMedia(this.ctrl, this.app);
 		this.bar = new NowPlayingBar(this.ctrl, this.app, this, () => { void this.openQueue(); });
   this.registerView(QUEUE_VIEW, leaf => new QueueView(leaf, this.ctrl));
