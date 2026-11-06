@@ -310,3 +310,36 @@ button.pp-button[hidden] { display: none; }
 .pp-queue-empty { padding: 24px 4px; max-width: 28em; }
 .pp-queue-empty-title { color: var(--text-muted); font-size: var(--font-ui-small); font-weight: var(--font-medium); line-height: 1.4; }
 .pp-queue-empty-hint { margin-top: 6px; color: var(--text-faint); font-size: var(--font-ui-smaller); line-height: 1.5; }
+
+/* Tuning uses the host palette and type, with a zero-centered instrument scale. */
+.pp-tuning-field { display: block; margin-bottom: 24px; }
+.pp-tuning-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 12px; }
+.pp-tuning-label { font-size: var(--font-ui-medium); font-weight: 600; }
+.pp-tuning-value { color: var(--text-normal); font-size: 22px; font-weight: 500; font-variant-numeric: tabular-nums; line-height: 1; }
+.pp-tuning input.pp-tuning-slider { display: block; width: 100%; height: 28px; margin: 0; padding: 0; cursor: pointer; appearance: none; background: transparent; }
+.pp-tuning-slider::-webkit-slider-runnable-track { height: 4px; border-radius: 4px; background: linear-gradient(to right, var(--background-modifier-border) 0 var(--pp-tuning-start), var(--interactive-accent) var(--pp-tuning-start) var(--pp-tuning-end), var(--background-modifier-border) var(--pp-tuning-end) 100%); }
+.pp-tuning-slider::-webkit-slider-thumb { appearance: none; width: 18px; height: 18px; margin-top: -7px; border: 2px solid var(--background-primary); border-radius: 50%; background: var(--interactive-accent); box-shadow: 0 1px 4px rgba(0,0,0,.2); }
+.pp-tuning-slider:focus-visible { outline: 2px solid var(--interactive-accent); outline-offset: 4px; border-radius: 4px; }
+.pp-tuning-scale { display: flex; justify-content: space-between; color: var(--text-faint); font-size: 11px; font-variant-numeric: tabular-nums; }
+.pp-tuning-scale span { min-width: 28px; }
+.pp-tuning-scale span:nth-child(2) { text-align: center; }
+.pp-tuning-scale span:last-child { text-align: right; }
+.pp-tuning-footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding-top: 16px; border-top: 1px solid var(--background-modifier-border); }
+.pp-tuning button.pp-tuning-reset { width: auto; height: 32px; gap: 6px; padding: 4px 8px; border-radius: 6px; }
+.pp-tuning button.pp-tuning-reset:hover:not(:disabled) { background: var(--background-modifier-hover); }
+.pp-tuning-total { font-size: var(--font-ui-small); color: var(--text-muted); font-variant-numeric: tabular-nums; }
+.is-mobile .pp-tuning input.pp-tuning-slider { height: 44px; }
+.is-mobile .pp-tuning button.pp-tuning-reset { height: 44px; }
+
+/* One anchored surface for playback speed and tuning. */
+.pp-playback-popover { position: fixed; inset: auto; margin: 0; width: min(300px, calc(100vw - 16px)); box-sizing: border-box; padding: 14px; border: 1px solid var(--background-modifier-border); border-radius: 10px; background: var(--background-primary); color: var(--text-normal); box-shadow: var(--shadow-s); }
+.pp-playback-popover::backdrop { background: transparent; }
+.pp-tuning-speeds { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 2px; padding-bottom: 12px; margin-bottom: 16px; border-bottom: 1px solid var(--background-modifier-border); }
+.pp-tuning button.pp-tuning-speed { width: 100%; min-width: 0; height: 32px; border-radius: 5px; padding: 0; font-size: 12px; }
+.pp-tuning button.pp-tuning-speed[aria-pressed="true"] { background: var(--interactive-accent); color: var(--text-on-accent); }
+.pp-playback-popover .pp-tuning-field { margin-bottom: 14px; }
+.pp-playback-popover .pp-tuning-heading { margin-bottom: 4px; }
+.pp-playback-popover .pp-tuning-label { font-size: 13px; font-weight: 500; }
+.pp-playback-popover .pp-tuning-value { font-size: 15px; }
+.pp-playback-popover .pp-tuning-footer { padding-top: 8px; }
+.is-mobile .pp-playback-popover button.pp-tuning-speed { height: 44px; min-height: 44px; }

@@ -30,7 +30,7 @@ function setup(mobile = false) {
 			this.cls = cls;
 			this.children = [];
 			this.parentElement = null;
-			this.attributes = {};
+			this.attributes = {}; this.dataset = {};
 			this.style = {setProperty(name, value) { this[name] = value; }};
             this.scrollTop = 0;
 			this.listeners = new Map();
@@ -42,7 +42,10 @@ function setup(mobile = false) {
             };
 		}
 		replaceChildren() { for (const child of [...this.children]) child.remove(); }
-        getBoundingClientRect() { return this.bounds ?? {left: 100, top: 0, bottom: 600}; }
+        getBoundingClientRect() { return this.bounds ?? {left: 100, right: 128, top: 0, bottom: 600}; }
+        get ownerDocument() { return document; }
+        showPopover() { this.popoverOpen = true; }
+        get offsetWidth() { return 300; }
         get offsetHeight() { return 64; }
         setPointerCapture(id) { this.pointer = id; }
         removeClass(cls) { this.classList.remove(cls); }
@@ -163,6 +166,7 @@ function setup(mobile = false) {
 		openLinkText: async path => { workspace.openedPath = path; },
 	};
 	const document = {
+        documentElement: {clientWidth: 800, clientHeight: 700},
 		body,
 		addEventListener(event, cb) {
 			if (!mediaListeners.has(event)) mediaListeners.set(event, new Set());
@@ -488,10 +492,12 @@ test("speed opens a checked selection menu and source icon precedes close", () =
  const speed = h.body.querySelector(".pp-np-rate");
  speed.emit("click");
  assert.equal(speed.textContent, "1x");
- const menu = h.menus[0];
- assert.deepEqual(menu.items.slice(0, 6).map(item => item.title), ["0.5×", "0.75×", "1×", "1.25×", "1.5×", "2×"]);
- assert.equal(menu.items[2].checked, true);
- menu.items[4].click();
+ const choices = h.body.querySelectorAll(".pp-tuning-speed");
+ assert.deepEqual(choices.map(button => button.textContent), ["0.5x", "0.75x", "1x", "1.25x", "1.5x", "2x"]);
+ assert.equal(choices[2].getAttribute("aria-pressed"), "true");
+ choices[4].emit("click");
+ assert.equal(choices[4].getAttribute("aria-pressed"), "true");
+ assert.equal(h.body.querySelectorAll(".pp-tuning-slider").length, 2);
  assert.equal(speed.textContent, "1.5x");
 });
 
@@ -729,4 +735,44 @@ test("rapid tuning saves work before Obsidian refreshes embed positions", async 
  await tuning.save("app://vault/song.mp3", "Note.md", -35);
  assert.equal(content, "![[song.mp3|detune=-35]]\n![[song.mp3|detune=-35]]");
  assert.equal(await tuning.read("app://vault/song.mp3", "Note.md"), -35);
+});
+
+for (const mobile of [false, true]) {
+ test(`tuning panel sliders apply, reset and close when recording changes (${mobile})`, () => {
+  const h = setup(mobile), note = h.note("Song.md"); h.focus(note); h.start(note);
+  h.plugin.ctrl.setDetune(-135);
+  if (mobile) h.body.querySelector(".action").emit("click");
+  h.body.querySelector(".pp-np-rate").emit("click");
+  const panel = h.body.querySelector(".pp-playback-popover");
+  const sliders = panel.querySelectorAll("input");
+  assert.equal(sliders.length, 2);
+  assert.deepEqual(sliders.map(input => input.getAttribute("type")), ["range", "range"]);
+  assert.deepEqual(sliders.map(input => input.value), ["-1", "-35"]);
+  sliders[1].value = "25"; sliders[1].emit("input");
+  assert.equal(h.plugin.ctrl.detune, -75);
+  assert.equal(panel.querySelector(".pp-tuning-total").textContent, "-75 cents total");
+  assert.equal(sliders[1].getAttribute("aria-valuetext"), "+25 cents");
+  panel.querySelector(".pp-tuning-reset").emit("click");
+  assert.equal(h.plugin.ctrl.detune, 0);
+  assert.deepEqual(sliders.map(input => input.value), ["0", "0"]);
+  assert.equal(panel.querySelector(".pp-tuning-reset").disabled, true);
+  h.plugin.ctrl.loadAndPlay("app://vault/next.mp3", "Next.md");
+  assert.equal(h.body.querySelector(".pp-playback-popover"), null);
+ });
+}
+
+test("playback popover dismisses cleanly and is removed on plugin unload", () => {
+ const h = setup(), note = h.note("Song.md"); h.focus(note); h.start(note);
+ const button = h.body.querySelector(".pp-np-rate");
+ button.emit("click");
+ assert.equal(button.getAttribute("aria-expanded"), "true");
+ const popover = h.body.querySelector(".pp-playback-popover");
+ assert.equal(popover.getAttribute("popover"), "auto");
+ popover.emit("toggle", {newState: "closed"});
+ assert.equal(h.body.querySelector(".pp-playback-popover"), null);
+ assert.equal(button.getAttribute("aria-expanded"), "false");
+ button.emit("click"); button.emit("click");
+ assert.equal(h.body.querySelectorAll(".pp-playback-popover").length, 1);
+ h.plugin.onunload();
+ assert.equal(h.body.querySelector(".pp-playback-popover"), null);
 });

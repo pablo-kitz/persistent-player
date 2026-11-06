@@ -52,7 +52,7 @@ MIT
 
 ### Recording tuning
 
-Open the speed menu and choose Detune. Semitones (-12 to +12) and cents (-99 to +99) are saved automatically in the recording's embed display text in the source note:
+Open the speed control to adjust playback speed, semitones, and cents in one popover. Semitones (-12 to +12) and cents (-99 to +99) are saved automatically in the recording's embed display text in the source note:
 
 ```markdown
 ![[song.mp3|detune=-35]]

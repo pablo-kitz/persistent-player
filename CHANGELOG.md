@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.0.11
+
+- Combine playback speed and tuning in one compact popover.
+- Replace numeric tuning fields with semitone and cent sliders, signed values, and Reset.
+- Add touch-friendly controls and dismiss the popover when the recording changes.
+
 ## 1.0.10
 
 - Add semitone and cent tuning through the playback speed menu.

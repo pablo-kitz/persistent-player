@@ -1,4 +1,4 @@
-import { App, MarkdownView, Menu, Modal, Notice, Platform, Plugin, setIcon, WorkspaceLeaf, ItemView, TFile } from "obsidian";
+import { App, MarkdownView, Modal, Notice, Platform, Plugin, setIcon, WorkspaceLeaf, ItemView, TFile } from "obsidian";
 
 // -- Types -------------------------------------------------------------------
 
@@ -190,6 +190,7 @@ class Controller {
 	}
 
 	destroy() {
+  closePlaybackPopover?.();
   ++this.loadRevision;
 		for (const el of this.pool.values()) { el.pause(); el.remove(); }
 		this.pool.clear();
@@ -375,7 +376,7 @@ class NowPlayingBar {
 		const right = bar.createDiv("pp-np-right");
 		this.timeEl = right.createSpan({ cls: "pp-np-time" });
 		this.syncProgress();
-        this.rateEl = speedButton(right, this.ctrl, this.app);
+        this.rateEl = speedButton(right, this.ctrl);
         this.sourceEl = actionButton(right, "external-link", "Open source note", () => {
             if (this.ctrl.notePath) void this.app.workspace.openLinkText(this.ctrl.notePath, "");
         });
@@ -587,43 +588,106 @@ function syncPlaybackButton(button: HTMLElement, playing: boolean) {
  setIcon(button, playing ? "pause" : "play");
  button.setAttribute("aria-label", label);
 }
-function speedButton(parent: HTMLElement, ctrl: Controller, app: App) {
- const button = actionButton(parent, null, "Playback speed", () => {
-  const menu = new Menu();
-  for (const rate of [0.5, 0.75, 1, 1.25, 1.5, 2]) {
-   menu.addItem(item => item.setTitle(`${rate}\u00d7`).setChecked(ctrl.playbackRate === rate).onClick(() => ctrl.setRate(rate)));
-  }
-  menu.addItem(item => item.setTitle(`Detune: ${ctrl.detune > 0 ? "+" : ""}${ctrl.detune} cents...`).onClick(() => {
-   const modal = new Modal(app);
-   modal.contentEl.createEl("h2", {text: "Recording tuning"});
-   modal.contentEl.createEl("p", {text: "Saved automatically in this recording's embed display text in the source note. Positive raises pitch; negative lowers it. Tuning also changes speed. At nonzero tuning, the speed control changes pitch too."});
-   const source = ctrl.active?.src;
-   const sourceNote = ctrl.notePath;
-   const field = (name: string, value: number, min: number, max: number) => {
-    const label = modal.contentEl.createEl("label", {text: name});
-    const input = label.createEl("input", {type: "number"});
-    input.value = String(value); input.min = String(min); input.max = String(max); input.step = "1";
-    input.setAttribute("aria-label", name);
-    return input;
-   };
-   const semitones = field("Semitones", Math.trunc(ctrl.detune / 100), -12, 12);
-   const cents = field("Cents", ctrl.detune % 100, -99, 99);
-   const update = () => {
-    if (ctrl.active?.src !== source || ctrl.notePath !== sourceNote) { modal.close(); return; }
-    if (semitones.value && cents.value && semitones.checkValidity() && cents.checkValidity()) ctrl.setDetune(Number(semitones.value) * 100 + Number(cents.value));
-   };
-   semitones.addEventListener("input", update); cents.addEventListener("input", update);
-   actionButton(modal.contentEl, "rotate-ccw", "Reset tuning", () => { semitones.value = cents.value = "0"; update(); });
-   modal.open();
-  }));
-  const bounds = button.getBoundingClientRect();
-  menu.showAtPosition({x: bounds.left, y: bounds.bottom + 4});
- });
+let closePlaybackPopover: (() => void) | undefined;
+function speedButton(parent: HTMLElement, ctrl: Controller) {
+ const button = actionButton(parent, null, "Playback speed", () => openTuningPanel(button, ctrl));
  button.addClass("pp-np-rate");
- button.setAttribute("aria-haspopup", "menu");
+ button.setAttribute("aria-haspopup", "dialog");
+ button.setAttribute("aria-expanded", "false");
  button.textContent = `${ctrl.playbackRate}x`;
  return button;
 }
+function openTuningPanel(anchor: HTMLElement, ctrl: Controller) {
+ closePlaybackPopover?.();
+ const doc = anchor.ownerDocument;
+ const content = doc.body.createDiv("pp-tuning pp-playback-popover");
+ content.setAttribute("popover", "auto");
+ content.setAttribute("role", "dialog");
+ content.setAttribute("aria-label", "Playback speed and tuning");
+ anchor.setAttribute("aria-expanded", "true");
+ let closed = false;
+ let unsubscribe = () => {};
+ const close = () => {
+  if (closed) return;
+  closed = true;
+  unsubscribe();
+  content.remove();
+  anchor.setAttribute("aria-expanded", "false");
+  if (closePlaybackPopover === close) closePlaybackPopover = undefined;
+ };
+ closePlaybackPopover = close;
+ content.addEventListener("toggle", event => { if (event.newState === "closed") close(); });
+ const speeds = content.createDiv("pp-tuning-speeds");
+ const speedButtons: HTMLButtonElement[] = [];
+ const syncSpeed = () => speedButtons.forEach(button => button.setAttribute("aria-pressed", String(Number(button.dataset.rate) === ctrl.playbackRate)));
+ for (const rate of [0.5, 0.75, 1, 1.25, 1.5, 2]) {
+  const button = actionButton(speeds, null, `Playback speed ${rate}x`, () => { ctrl.setRate(rate); syncSpeed(); });
+  button.textContent = `${rate}x`;
+  button.dataset.rate = String(rate);
+  button.addClass("pp-tuning-speed");
+  speedButtons.push(button);
+ }
+ syncSpeed();
+ const source = ctrl.active?.src;
+ const sourceNote = ctrl.notePath;
+ const signed = (value: number) => value > 0 ? `+${value}` : String(value);
+ const field = (name: string, value: number, limit: number) => {
+  const label = content.createEl("label", {cls: "pp-tuning-field"});
+  const heading = label.createSpan({cls: "pp-tuning-heading"});
+  const caption = heading.createSpan();
+  caption.createSpan({text: name, cls: "pp-tuning-label"});
+  const output = heading.createEl("output", {cls: "pp-tuning-value"});
+  const input = label.createEl("input", {attr: {type: "range", min: String(-limit), max: String(limit), step: "1"}, cls: "pp-tuning-slider"});
+  input.value = String(value);
+  input.setAttribute("aria-label", name);
+  const scale = label.createSpan({cls: "pp-tuning-scale", attr: {"aria-hidden": "true"}});
+  for (const tick of [-limit, 0, limit]) scale.createSpan({text: signed(tick)});
+  const sync = () => {
+   const value = Number(input.value);
+   output.textContent = signed(value);
+   input.setAttribute("aria-valuetext", `${signed(value)} ${name.toLowerCase()}`);
+   const position = (value + limit) / (limit * 2) * 100;
+   input.style.setProperty("--pp-tuning-start", `${Math.min(50, position)}%`);
+   input.style.setProperty("--pp-tuning-end", `${Math.max(50, position)}%`);
+  };
+  sync();
+  return {input, sync};
+ };
+ const semitones = field("Semitones", Math.trunc(ctrl.detune / 100), 12);
+ const cents = field("Cents", ctrl.detune % 100, 99);
+ const footer = content.createDiv("pp-tuning-footer");
+ const reset = actionButton(footer, "rotate-ccw", "Reset tuning", () => {
+  semitones.input.value = cents.input.value = "0";
+  update();
+ });
+ reset.addClass("pp-tuning-reset");
+ reset.createSpan({text: "Reset"});
+ const total = footer.createSpan({cls: "pp-tuning-total", attr: {"aria-live": "polite"}});
+ const sync = () => {
+  semitones.sync(); cents.sync();
+  const value = Number(semitones.input.value) * 100 + Number(cents.input.value);
+  total.textContent = value === 0 ? "Original pitch" : `${signed(value)} cents total`;
+  reset.disabled = value === 0;
+ };
+ const update = () => {
+  if (ctrl.active?.src !== source || ctrl.notePath !== sourceNote) { close(); return; }
+  ctrl.setDetune(Number(semitones.input.value) * 100 + Number(cents.input.value));
+  sync();
+ };
+ for (const field of [semitones, cents]) field.input.addEventListener("input", update);
+ unsubscribe = ctrl.on("change", () => {
+  if (ctrl.active?.src !== source || ctrl.notePath !== sourceNote) close();
+ });
+ sync();
+ content.showPopover();
+ const bounds = anchor.getBoundingClientRect();
+ const width = content.offsetWidth, height = content.offsetHeight;
+ const viewport = doc.documentElement;
+ content.style.left = `${Math.max(8, Math.min(bounds.right - width, viewport.clientWidth - width - 8))}px`;
+ content.style.top = `${Math.max(8, Math.min(bounds.bottom + height + 8 <= viewport.clientHeight ? bounds.bottom + 6 : bounds.top - height - 6, viewport.clientHeight - height - 8))}px`;
+ speedButtons.find(button => Number(button.dataset.rate) === ctrl.playbackRate)?.focus();
+}
+
 function renderRecording(parent: HTMLElement, src: string, metadata: MediaMetadataInit) {
  parent.replaceChildren();
  const art = parent.createDiv("pp-cover-small");
@@ -697,7 +761,7 @@ class QueueSurface {
    this.time = controls.createSpan("pp-np-time");
    this.syncProgress();
    if (Platform.isMobile) {
-    speedButton(controls, this.ctrl, this.app);
+    speedButton(controls, this.ctrl);
     const stop = actionButton(controls, "square", "Stop playback", () => { this.ctrl.clearNote(this.ctrl.notePath); this.close(); });
     stop.addClass("pp-np-close");
    }
