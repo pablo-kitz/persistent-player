@@ -10,7 +10,7 @@ const { code } = transformSync(readFileSync(new URL("../src/main.ts", import.met
 
 // A small host double: media events are controlled so navigation can be tested
 // without a decoder, vault, or running Obsidian instance.
-function setup(mobile = false) {
+function setup(mobile = false, storedData = null) {
 	const mediaListeners = new Map();
  const menus = [];
  const observers = [];
@@ -132,7 +132,7 @@ function setup(mobile = false) {
         el.addEventListener("click", callback); return el;
     };
 	class Plugin {
-  loadData() { return Promise.resolve(null); }
+  loadData() { return Promise.resolve(storedData); }
   saveData(data) { this.savedData = data; return Promise.resolve(); }
 		constructor(app) { this.app = app; this.app.vault = {getFiles: () => [], getAbstractFileByPath: () => null}; this.cleanups = []; this.commands = new Map(); }
 		registerDomEvent(target, event, cb) {
@@ -409,7 +409,7 @@ for (const mobile of [false, true]) {
    "Restart audio (double tap: back 5 seconds)", "Pause", "Next audio (double tap: forward 5 seconds)",
   ] : ["Restart audio (double tap: back 5 seconds)", "Pause", "Next audio (double tap: forward 5 seconds)"]);
   if (!mobile) assert.deepEqual(bar.querySelector(".pp-np-right").children.map(el => el.attributes["aria-label"]),
-   [undefined, "Playback speed", "Open source note: Playlist.md", "Queue", "Close player"]);
+   [undefined, "Playback speed", "Volume", "Open source note: Playlist.md", "Queue", "Close player"]);
  });
 }
 
@@ -605,7 +605,7 @@ for (const mobile of [false, true]) {
   const el = h.body.createDiv(); const surface = h.queueSurface(el);
   const controls = el.querySelector(".pp-queue-transport");
   const buttons = controls.querySelectorAll("button");
-  assert.equal(buttons.length, mobile ? 5 : 3);
+  assert.equal(buttons.length, mobile ? 6 : 4);
   assert.deepEqual(buttons.slice(0, 3).map(button => button.icon), ["rewind", "pause", "fast-forward"]);
   for (const button of buttons) assert.equal(button.getAttribute("title"), null);
   ctrl.active.currentTime = 40;
@@ -750,6 +750,7 @@ for (const mobile of [false, true]) {
   assert.deepEqual(sliders.map(input => input.value), ["-1", "-35"]);
   sliders[1].value = "25"; sliders[1].emit("input");
   assert.equal(h.plugin.ctrl.detune, -75);
+  assert.equal(h.body.querySelector(".pp-playback-popover"), panel);
   assert.equal(panel.querySelector(".pp-tuning-total").textContent, "-75 cents total");
   assert.equal(sliders[1].getAttribute("aria-valuetext"), "+25 cents");
   panel.querySelector(".pp-tuning-reset").emit("click");
@@ -775,4 +776,98 @@ test("playback popover dismisses cleanly and is removed on plugin unload", () =>
  assert.equal(h.body.querySelectorAll(".pp-playback-popover").length, 1);
  h.plugin.onunload();
  assert.equal(h.body.querySelector(".pp-playback-popover"), null);
+});
+
+
+for (const mobile of [false, true]) {
+ test(`Space toggles only the focused player without activating its focused button (${mobile})`, () => {
+  const h = setup(mobile), note = h.note("Space.md"); h.focus(note); h.start(note);
+  if (mobile) h.body.querySelector(".action").emit("click");
+  const player = h.body.querySelector(mobile ? ".pp-queue-playing" : ".pp-now-playing");
+  const target = player.querySelector(".pp-np-next");
+  let prevented = 0, stopped = 0;
+  const event = {key: " ", target, preventDefault() { prevented++; }, stopPropagation() { stopped++; }};
+  player.emit("keydown", event);
+  assert.equal(h.plugin.ctrl.playing, false);
+  assert.equal(prevented, 1); assert.equal(stopped, 1);
+  player.emit("keydown", {...event, repeat: true});
+  assert.equal(h.plugin.ctrl.playing, false);
+  player.emit("keyup", event);
+  assert.equal(prevented, 3);
+  player.emit("keydown", {...event, ctrlKey: true});
+  assert.equal(h.plugin.ctrl.playing, false);
+  const input = player.createEl("input"); input.type = "text";
+  player.emit("keydown", {...event, target: input});
+  assert.equal(prevented, 3);
+  player.emit("keydown", {...event, target: player.querySelector(".pp-np-center")});
+  assert.equal(h.plugin.ctrl.playing, true);
+ });
+}
+
+for (const mobile of [false, true]) {
+ test(`volume uses a native popover slider and persists across sessions (${mobile})`, async () => {
+  const h = setup(mobile, {volume: 0.37, unrelated: "preserved"});
+  await Promise.resolve();
+  const note = h.note("Volume.md"); h.focus(note); h.start(note);
+  assert.equal(h.plugin.ctrl.active.volume, 0.37);
+  if (mobile) h.body.querySelector(".action").emit("click");
+  const button = h.body.querySelector(".pp-np-volume"); button.emit("click");
+  const panel = h.body.querySelector(".pp-volume");
+  assert.equal(panel.getAttribute("popover"), "auto");
+  assert.equal(button.getAttribute("aria-expanded"), "true");
+  const slider = panel.querySelector("input");
+  assert.equal(slider.getAttribute("type"), "range");
+  assert.equal(slider.value, "37");
+  slider.value = "0"; slider.emit("input");
+  assert.equal(h.plugin.ctrl.active.volume, 0);
+  assert.equal(slider.getAttribute("aria-valuetext"), "Muted");
+  slider.value = "64"; slider.emit("input");
+  h.plugin.ctrl.setDetune(25);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(h.plugin.savedData.volume, 0.64);
+  assert.equal(h.plugin.savedData.detunes["app://vault/song.mp3"], 25);
+  assert.equal(h.plugin.savedData.unrelated, "preserved");
+  const saved = h.plugin.savedData;
+  panel.emit("toggle", {newState: "closed"});
+  assert.equal(button.getAttribute("aria-expanded"), "false");
+  button.emit("click");
+  h.plugin.onunload();
+  assert.equal(h.body.querySelector(".pp-volume"), null);
+  const restored = setup(mobile, saved);
+  await Promise.resolve();
+  restored.plugin.ctrl.loadAndPlay("app://vault/new.mp3", "New.md");
+  assert.equal(restored.plugin.ctrl.active.volume, 0.64);
+  assert.equal(restored.plugin.ctrl.detune, 0);
+ });
+}
+
+test("volume changes before settings load win and apply to reused and new audio", async () => {
+ let resolve;
+ const h = setup(false, new Promise(done => { resolve = done; })), ctrl = h.plugin.ctrl;
+ ctrl.loadAndPlay("app://vault/a.mp3", "A.md");
+ const first = ctrl.active;
+ ctrl.setVolume(0.24);
+ resolve({volume: 0.9, unrelated: true});
+ await new Promise(resolve => setImmediate(resolve));
+ assert.equal(ctrl.playbackVolume, 0.24);
+ assert.equal(h.plugin.savedData.volume, 0.24);
+ ctrl.loadAndPlay("app://vault/b.mp3", "B.md");
+ assert.equal(ctrl.active.volume, 0.24);
+ ctrl.setVolume(2);
+ assert.equal(first.volume, 1); assert.equal(ctrl.active.volume, 1);
+ ctrl.setVolume(-1);
+ assert.equal(first.volume, 0); assert.equal(ctrl.active.volume, 0);
+ ctrl.setVolume(NaN);
+ assert.equal(ctrl.playbackVolume, 0);
+});
+
+
+test("volume popovers close when their player surface is removed", () => {
+ const h = setup(), ctrl = h.plugin.ctrl;
+ ctrl.loadAndPlay("app://vault/a.mp3", "A.md");
+ const el = h.body.createDiv(), surface = h.queueSurface(el);
+ el.querySelector(".pp-np-volume").emit("click");
+ assert.ok(h.body.querySelector(".pp-volume"));
+ surface.destroy();
+ assert.equal(h.body.querySelector(".pp-volume"), null);
 });

@@ -3,7 +3,7 @@ import { App, MarkdownView, Modal, Notice, Platform, Plugin, setIcon, WorkspaceL
 // -- Types -------------------------------------------------------------------
 
 type QueueTrack = { src: string; note: string };
-type Evt = "queue" | "play" | "pause" | "timeupdate" | "ratechange" | "change" | "metadata";
+type Evt = "queue" | "play" | "pause" | "timeupdate" | "ratechange" | "change" | "metadata" | "volumechange";
 type Cb = () => void;
 
 // -- Controller --------------------------------------------------------------
@@ -14,7 +14,7 @@ class Controller {
  readTuning?: (src: string, note: string) => Promise<number | null> | null;
  private loadRevision = 0;
  private detunes: Record<string, number> = {};
- constructor(private saveDetunes: (values: Record<string, number>) => void = () => {}, private sourceKey: (src: string) => string = audioSourceKey) {}
+ constructor(private saveDetunes: (values: Record<string, number>) => void = () => {}, private sourceKey: (src: string) => string = audioSourceKey, private saveVolume: (volume: number) => void = () => {}) {}
  restoreDetunes(values: Record<string, number>) {
   this.detunes = {...values, ...this.detunes};
   this.applyRate();
@@ -61,6 +61,14 @@ class Controller {
   this.emit("queue");
  }
  private volume = 1;
+ get playbackVolume(): number { return this.volume; }
+ setVolume(value: number, persist = true) {
+  if (!Number.isFinite(value)) return;
+  this.volume = Math.max(0, Math.min(1, value));
+  for (const audio of this.pool.values()) audio.volume = this.volume;
+  this.emit("volumechange");
+  if (persist) this.saveVolume(this.volume);
+ }
 	private rate = 1;
 	private subs = new Map<Evt, Set<Cb>>();
 
@@ -357,6 +365,7 @@ class NowPlayingBar {
 
 		this.hide();
 		const bar = (this.bar = createDiv("pp-now-playing"));
+        playerKeyboard(bar, this.ctrl);
 		if (this.panel) {
 			bar.classList.add("pp-player-card");
 			this.art = bar.createDiv("pp-album-art");
@@ -377,6 +386,7 @@ class NowPlayingBar {
 		this.timeEl = right.createSpan({ cls: "pp-np-time" });
 		this.syncProgress();
         this.rateEl = speedButton(right, this.ctrl);
+        volumeButton(right, this.ctrl);
         this.sourceEl = actionButton(right, "external-link", "Open source note", () => {
             if (this.ctrl.notePath) void this.app.workspace.openLinkText(this.ctrl.notePath, "");
         });
@@ -395,6 +405,7 @@ class NowPlayingBar {
 	}
 
 	hide() {
+        if (this.bar) closePopoverWithin(this.bar);
 		this.transport.cancel();
 		this.mobileActions.forEach(el => el.remove());
 		this.mobileActions = [];
@@ -571,6 +582,85 @@ class EmbedPlaybackIndicator {
  }
 }
 
+// Space belongs to the focused player, including its transport and seek control.
+function playerKeyboard(surface: HTMLElement, ctrl: Controller) {
+ surface.tabIndex = 0;
+ surface.addEventListener("keydown", event => {
+  if (event.key !== " " || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
+  const target = event.target as HTMLElement;
+  if (target.isContentEditable || target.closest("textarea") || target.closest("select")) return;
+  const input = target.closest("input");
+  if (input && input.type !== "range") return;
+  event.preventDefault();
+  event.stopPropagation();
+  if (!event.repeat && ctrl.hasActive) ctrl.toggle();
+ });
+ surface.addEventListener("keyup", event => {
+  if (event.key === " " && !event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey) event.preventDefault();
+ });
+}
+
+function volumeButton(parent: HTMLElement, ctrl: Controller) {
+ const button = actionButton(parent, "volume-2", "Volume", () => {
+  closePlaybackPopover?.();
+  let off = () => {};
+  const {content} = playbackPopover(button, "Volume", "pp-volume", () => off());
+  const label = content.createEl("label", {cls: "pp-volume-field"});
+  const heading = label.createSpan({cls: "pp-tuning-heading"});
+  heading.createSpan({text: "Volume", cls: "pp-tuning-label"});
+  const output = heading.createEl("output", {cls: "pp-tuning-value"});
+  const input = label.createEl("input", {cls: "pp-volume-slider", attr: {type: "range", min: "0", max: "100", step: "1", "aria-label": "Volume"}});
+  const scale = label.createSpan({cls: "pp-volume-scale", attr: {"aria-hidden": "true"}});
+  scale.createSpan({text: "Silent"}); scale.createSpan({text: "100%"});
+  const sync = () => {
+   const percent = Math.round(ctrl.playbackVolume * 100);
+   input.value = String(percent);
+   output.textContent = `${percent}%`;
+   input.setAttribute("aria-valuetext", percent === 0 ? "Muted" : `${percent}%`);
+   input.style.setProperty("--pp-volume", `${percent}%`);
+  };
+  input.addEventListener("input", () => ctrl.setVolume(Number(input.value) / 100));
+  off = ctrl.on("volumechange", sync);
+  sync();
+  positionPlaybackPopover(content, button);
+  input.focus();
+ });
+ button.addClass("pp-np-volume");
+ button.setAttribute("aria-haspopup", "dialog");
+ button.setAttribute("aria-expanded", "false");
+ return button;
+}
+
+function playbackPopover(anchor: HTMLElement, label: string, cls: string, cleanup: () => void = () => {}) {
+ const content = anchor.ownerDocument.body.createDiv(`${cls} pp-playback-popover`);
+ content.setAttribute("popover", "auto");
+ content.setAttribute("role", "dialog");
+ content.setAttribute("aria-label", label);
+ anchor.setAttribute("aria-expanded", "true");
+ let closed = false;
+ const close = () => {
+  if (closed) return;
+  closed = true;
+  cleanup();
+  content.remove();
+  anchor.setAttribute("aria-expanded", "false");
+  if (closePlaybackPopover === close) { closePlaybackPopover = undefined; playbackPopoverAnchor = undefined; }
+ };
+ closePlaybackPopover = close;
+ playbackPopoverAnchor = anchor;
+ content.addEventListener("toggle", event => { if (event.newState === "closed") close(); });
+ return {content, close};
+}
+
+function positionPlaybackPopover(content: HTMLElement, anchor: HTMLElement) {
+ content.showPopover();
+ const bounds = anchor.getBoundingClientRect();
+ const width = content.offsetWidth, height = content.offsetHeight;
+ const viewport = anchor.ownerDocument.documentElement;
+ content.style.left = `${Math.max(8, Math.min(bounds.right - width, viewport.clientWidth - width - 8))}px`;
+ content.style.top = `${Math.max(8, Math.min(bounds.bottom + height + 8 <= viewport.clientHeight ? bounds.bottom + 6 : bounds.top - height - 6, viewport.clientHeight - height - 8))}px`;
+}
+
 // All plugin-owned controls use native buttons and one visual primitive.
 function actionButton(parent: HTMLElement, icon: string | null, label: string, action: () => void) {
  const button = parent.createEl("button", {cls: "clickable-icon pp-button", attr: {type: "button", "aria-label": label}});
@@ -589,6 +679,10 @@ function syncPlaybackButton(button: HTMLElement, playing: boolean) {
  button.setAttribute("aria-label", label);
 }
 let closePlaybackPopover: (() => void) | undefined;
+let playbackPopoverAnchor: HTMLElement | undefined;
+function closePopoverWithin(surface: HTMLElement) {
+ if (playbackPopoverAnchor && surface.contains(playbackPopoverAnchor)) closePlaybackPopover?.();
+}
 function speedButton(parent: HTMLElement, ctrl: Controller) {
  const button = actionButton(parent, null, "Playback speed", () => openTuningPanel(button, ctrl));
  button.addClass("pp-np-rate");
@@ -613,9 +707,10 @@ function openTuningPanel(anchor: HTMLElement, ctrl: Controller) {
   unsubscribe();
   content.remove();
   anchor.setAttribute("aria-expanded", "false");
-  if (closePlaybackPopover === close) closePlaybackPopover = undefined;
+  if (closePlaybackPopover === close) { closePlaybackPopover = undefined; playbackPopoverAnchor = undefined; }
  };
  closePlaybackPopover = close;
+ playbackPopoverAnchor = anchor;
  content.addEventListener("toggle", event => { if (event.newState === "closed") close(); });
  const speeds = content.createDiv("pp-tuning-speeds");
  const speedButtons: HTMLButtonElement[] = [];
@@ -679,12 +774,7 @@ function openTuningPanel(anchor: HTMLElement, ctrl: Controller) {
   if (ctrl.active?.src !== source || ctrl.notePath !== sourceNote) close();
  });
  sync();
- content.showPopover();
- const bounds = anchor.getBoundingClientRect();
- const width = content.offsetWidth, height = content.offsetHeight;
- const viewport = doc.documentElement;
- content.style.left = `${Math.max(8, Math.min(bounds.right - width, viewport.clientWidth - width - 8))}px`;
- content.style.top = `${Math.max(8, Math.min(bounds.bottom + height + 8 <= viewport.clientHeight ? bounds.bottom + 6 : bounds.top - height - 6, viewport.clientHeight - height - 8))}px`;
+ positionPlaybackPopover(content, anchor);
  speedButtons.find(button => Number(button.dataset.rate) === ctrl.playbackRate)?.focus();
 }
 
@@ -741,6 +831,7 @@ class QueueSurface {
   if (this.time) this.time.textContent = `${fmt(this.ctrl.currentTime)} / ${fmt(duration)}`;
  }
  render() {
+  if (playbackPopoverAnchor?.hasClass("pp-np-volume")) closePopoverWithin(this.container);
   this.transport.cancel();
   const el = this.container;
   const scrollTop = el.scrollTop;
@@ -748,6 +839,7 @@ class QueueSurface {
   this.playhead = undefined; this.time = undefined;
   el.replaceChildren(); el.addClass("pp-queue");
   this.head = el.createDiv("pp-queue-playing");
+  playerKeyboard(this.head, this.ctrl);
   if (this.ctrl.active) {
    const identity = this.head.createDiv("pp-recording");
    renderRecording(identity, this.ctrl.active.src, this.ctrl.metadata);
@@ -760,6 +852,7 @@ class QueueSurface {
    this.playhead = new SeekTrack(controls, this.ctrl);
    this.time = controls.createSpan("pp-np-time");
    this.syncProgress();
+   volumeButton(controls, this.ctrl);
    if (Platform.isMobile) {
     speedButton(controls, this.ctrl);
     const stop = actionButton(controls, "square", "Stop playback", () => { this.ctrl.clearNote(this.ctrl.notePath); this.close(); });
@@ -840,6 +933,7 @@ class QueueSurface {
   el.scrollTop = scrollTop; this.scroll();
  }
  destroy() {
+  closePopoverWithin(this.container);
   this.transport.cancel();
   this.dragCleanups.forEach(cleanup => cleanup()); this.metadataCache.clear();
   this.off.forEach(off => off()); this.container.removeEventListener("scroll", this.scroll);
@@ -946,8 +1040,16 @@ export default class PersistentPlayerPlugin extends Plugin {
 		let data: Record<string, unknown> = {};
   let ready = false;
   let pending: Record<string, number> | null = null;
+  let pendingVolume: number | undefined;
   let writes = Promise.resolve();
   const embedTuning = new EmbedTuning(this.app);
+  const saveSettings = () => {
+   const snapshot = {...data};
+   writes = writes.then(() => this.saveData(snapshot)).catch(error => {
+    console.error("Could not save player settings", error);
+    new Notice("Could not save player settings. Please try again.");
+   });
+  };
   const persist = (detunes: Record<string, number>) => {
    const src = this.ctrl.active?.src;
    if (src && embedTuning.canStore(src, this.ctrl.notePath)) {
@@ -961,11 +1063,17 @@ export default class PersistentPlayerPlugin extends Plugin {
    }
    pending = detunes;
    if (!ready) return;
-   writes = writes.then(() => this.saveData({...data, detunes})).catch(error => console.error("Could not save recording tuning", error));
+   data.detunes = detunes;
+   saveSettings();
   };
   this.ctrl = new Controller(persist, src => {
    const file = this.app.vault.getFiles().find(file => audioSourceKey(this.app.vault.getResourcePath(file)) === audioSourceKey(src));
    return file ? `vault:${file.path}` : audioSourceKey(src);
+  }, volume => {
+   pendingVolume = volume;
+   if (!ready) return;
+   data.volume = volume;
+   saveSettings();
   });
   this.ctrl.readTuning = (src, note) => embedTuning.read(src, note);
   void this.loadData().then((stored: Record<string, unknown> | null) => {
@@ -975,7 +1083,9 @@ export default class PersistentPlayerPlugin extends Plugin {
     for (const [key, value] of Object.entries(data.detunes)) if (typeof value === "number" && Number.isFinite(value) && Math.abs(value) <= 1299) detunes[key] = value;
    }
    this.ctrl.restoreDetunes(detunes);
+   if (pendingVolume === undefined && typeof data.volume === "number") this.ctrl.setVolume(data.volume, false);
    ready = true;
+   if (pendingVolume !== undefined) { data.volume = pendingVolume; saveSettings(); }
    if (pending) persist({...detunes, ...pending});
   }).catch(error => console.error("Could not load recording tuning", error));
 		this.media = new SystemMedia(this.ctrl, this.app);

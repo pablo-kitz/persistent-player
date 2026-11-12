@@ -8,11 +8,12 @@ No network requests, no telemetry. Everything runs locally inside the vault.
 
 Play any embedded audio file as you normally would. Instead of the inline embed, Persistent Player takes over playback with a now-playing bar at the top of the view:
 
-- **Play or pause** the currently loaded audio, from any open note.
+- **Play or pause** the currently loaded audio, from any open note. Press **Space** while focus is in the player to toggle playback; **Enter** activates the focused button.
 - **Click the source note's name**, between the speed and close controls, to return to the note where playback started. The name is hidden while viewing that note.
 - **Skip back or forward 5 seconds** for quick re-listening.
 - **Drag the progress track** to seek anywhere in the file.
 - **Click the speed label** to cycle through 0.5x, 0.75x, 1x, 1.25x, 1.5x, and 2x.
+- **Open the volume control** for a slider from 0% (silent) to 100%. Volume applies immediately and is saved in your plugin configuration across sessions.
 - **Close** to stop playback and release the note's audio.
 
 Scrolling, switching notes, opening a note with another audio embed, or closing the source tab does not interrupt playback. Only explicitly playing another embed switches the audio. While playing, a speaker indicator marks open tabs for the source note; it disappears when playback pauses or ends. The indicator is omitted on surfaces without a tab header.

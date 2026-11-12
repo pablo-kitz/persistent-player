@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.0.12
+
+- Toggle playback with Space while the player is focused.
+- Improve hover, pressed, and keyboard focus states for player buttons.
+- Add a volume popover with a native slider and percentage readout; save volume across sessions.
+- Keep semitone, cent, and volume slider thumbs centered despite host theme styles.
+
 ## 1.0.11
 
 - Combine playback speed and tuning in one compact popover.

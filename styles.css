@@ -266,7 +266,7 @@ button.pp-button {
  min-height: 28px;
  padding: 2px 4px;
  border: 0;
- border-radius: 0;
+ border-radius: 5px;
  box-shadow: none;
  background: transparent;
  color: var(--text-muted);
@@ -276,7 +276,10 @@ button.pp-button {
  cursor: pointer;
 }
 button.pp-button svg { width: 14px; height: 14px; }
-button.pp-button:hover { background: transparent; color: var(--text-normal); box-shadow: none; }
+button.pp-button:hover:not(:disabled) { background: var(--background-modifier-hover); color: var(--text-normal); box-shadow: none; }
+button.pp-button:active:not(:disabled) { background: var(--background-modifier-active-hover, var(--background-modifier-hover)); color: var(--interactive-accent); box-shadow: inset 0 0 0 1px var(--background-modifier-border); transform: translateY(1px); }
+button.pp-button[aria-expanded="true"] { background: var(--background-modifier-hover); color: var(--interactive-accent); }
+.pp-now-playing:focus-visible, .pp-queue-playing:focus-visible { outline: 2px solid var(--interactive-accent); outline-offset: -2px; }
 button.pp-button:focus-visible { outline: 2px solid var(--interactive-accent); outline-offset: 2px; }
 button.pp-button:disabled { opacity: .35; cursor: default; }
 button.pp-button[hidden] { display: none; }
@@ -294,7 +297,7 @@ button.pp-button[hidden] { display: none; }
 .is-mobile .pp-queue-transport { display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px 8px; }
 .is-mobile .pp-queue-transport > .pp-button { justify-self: center; }
 .is-mobile .pp-queue-transport .pp-np-center { grid-column: 1 / -1; width: 100%; padding: 16px 0; }
-.is-mobile .pp-queue-transport .pp-np-time { justify-self: start; font-size: var(--font-ui-small); }
+.is-mobile .pp-queue-transport .pp-np-time { grid-column: 1 / -1; justify-self: start; font-size: var(--font-ui-small); }
 .is-mobile button.pp-button { width: 48px; height: 48px; min-width: 48px; min-height: 48px; }
 .is-mobile button.pp-button svg { width: 24px; height: 24px; }
 .is-mobile .pp-queue-transport button.pp-np-play svg { width: 32px; height: 32px; }
@@ -311,15 +314,16 @@ button.pp-button[hidden] { display: none; }
 .pp-queue-empty-title { color: var(--text-muted); font-size: var(--font-ui-small); font-weight: var(--font-medium); line-height: 1.4; }
 .pp-queue-empty-hint { margin-top: 6px; color: var(--text-faint); font-size: var(--font-ui-smaller); line-height: 1.5; }
 
-/* Tuning uses the host palette and type, with a zero-centered instrument scale. */
+/* Tuning uses the host palette and type, with a zero-centered instrument scale.
+   Match the range type explicitly so host thumb sizing and offsets cannot override ours. */
 .pp-tuning-field { display: block; margin-bottom: 24px; }
 .pp-tuning-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 12px; }
 .pp-tuning-label { font-size: var(--font-ui-medium); font-weight: 600; }
 .pp-tuning-value { color: var(--text-normal); font-size: 22px; font-weight: 500; font-variant-numeric: tabular-nums; line-height: 1; }
-.pp-tuning input.pp-tuning-slider { display: block; width: 100%; height: 28px; margin: 0; padding: 0; cursor: pointer; appearance: none; background: transparent; }
-.pp-tuning-slider::-webkit-slider-runnable-track { height: 4px; border-radius: 4px; background: linear-gradient(to right, var(--background-modifier-border) 0 var(--pp-tuning-start), var(--interactive-accent) var(--pp-tuning-start) var(--pp-tuning-end), var(--background-modifier-border) var(--pp-tuning-end) 100%); }
-.pp-tuning-slider::-webkit-slider-thumb { appearance: none; width: 18px; height: 18px; margin-top: -7px; border: 2px solid var(--background-primary); border-radius: 50%; background: var(--interactive-accent); box-shadow: 0 1px 4px rgba(0,0,0,.2); }
-.pp-tuning-slider:focus-visible { outline: 2px solid var(--interactive-accent); outline-offset: 4px; border-radius: 4px; }
+.pp-tuning input[type="range"].pp-tuning-slider { display: block; width: 100%; height: 28px; margin: 0; padding: 0; cursor: pointer; appearance: none; background: transparent; border: 0; box-shadow: none; }
+.pp-tuning input[type="range"].pp-tuning-slider::-webkit-slider-runnable-track { height: 4px; border: 0; box-sizing: border-box; border-radius: 4px; box-shadow: none; background: linear-gradient(to right, var(--background-modifier-border) 0 var(--pp-tuning-start), var(--interactive-accent) var(--pp-tuning-start) var(--pp-tuning-end), var(--background-modifier-border) var(--pp-tuning-end) 100%); }
+.pp-tuning input[type="range"].pp-tuning-slider::-webkit-slider-thumb { appearance: none; box-sizing: border-box; position: static; transform: none; width: 18px; height: 18px; margin: -7px 0 0; border: 2px solid var(--background-primary); border-radius: 50%; background: var(--interactive-accent); box-shadow: 0 1px 4px rgba(0,0,0,.2); }
+.pp-tuning input[type="range"].pp-tuning-slider:focus-visible { outline: 2px solid var(--interactive-accent); outline-offset: 4px; border-radius: 4px; }
 .pp-tuning-scale { display: flex; justify-content: space-between; color: var(--text-faint); font-size: 11px; font-variant-numeric: tabular-nums; }
 .pp-tuning-scale span { min-width: 28px; }
 .pp-tuning-scale span:nth-child(2) { text-align: center; }
@@ -328,7 +332,7 @@ button.pp-button[hidden] { display: none; }
 .pp-tuning button.pp-tuning-reset { width: auto; height: 32px; gap: 6px; padding: 4px 8px; border-radius: 6px; }
 .pp-tuning button.pp-tuning-reset:hover:not(:disabled) { background: var(--background-modifier-hover); }
 .pp-tuning-total { font-size: var(--font-ui-small); color: var(--text-muted); font-variant-numeric: tabular-nums; }
-.is-mobile .pp-tuning input.pp-tuning-slider { height: 44px; }
+.is-mobile .pp-tuning input[type="range"].pp-tuning-slider { height: 44px; }
 .is-mobile .pp-tuning button.pp-tuning-reset { height: 44px; }
 
 /* One anchored surface for playback speed and tuning. */
@@ -343,3 +347,16 @@ button.pp-button[hidden] { display: none; }
 .pp-playback-popover .pp-tuning-value { font-size: 15px; }
 .pp-playback-popover .pp-tuning-footer { padding-top: 8px; }
 .is-mobile .pp-playback-popover button.pp-tuning-speed { height: 44px; min-height: 44px; }
+
+/* A native range input keeps keyboard and touch behavior in the compact popover. */
+.pp-volume.pp-playback-popover { width: min(240px, calc(100vw - 16px)); padding: 16px; }
+.pp-volume-field { display: block; }
+.pp-volume input[type="range"].pp-volume-slider { display: block; width: 100%; height: 28px; margin: 8px 0 2px; padding: 0; appearance: none; background: transparent; border: 0; box-shadow: none; cursor: pointer; accent-color: var(--interactive-accent); }
+.pp-volume input[type="range"].pp-volume-slider::-webkit-slider-runnable-track { height: 5px; border: 0; box-sizing: border-box; border-radius: 5px; box-shadow: none; background: linear-gradient(to right, var(--interactive-accent) 0 var(--pp-volume), var(--background-modifier-border) var(--pp-volume) 100%); }
+.pp-volume input[type="range"].pp-volume-slider::-webkit-slider-thumb { appearance: none; box-sizing: border-box; position: static; transform: none; width: 16px; height: 16px; margin: -5.5px 0 0; border: 2px solid var(--background-primary); border-radius: 50%; background: var(--interactive-accent); box-shadow: 0 1px 4px rgba(0,0,0,.2); }
+.pp-volume input[type="range"].pp-volume-slider::-moz-range-track { height: 5px; border-radius: 5px; background: var(--background-modifier-border); }
+.pp-volume input[type="range"].pp-volume-slider::-moz-range-progress { height: 5px; border-radius: 5px; background: var(--interactive-accent); }
+.pp-volume input[type="range"].pp-volume-slider::-moz-range-thumb { width: 12px; height: 12px; border: 2px solid var(--background-primary); border-radius: 50%; background: var(--interactive-accent); }
+.pp-volume input[type="range"].pp-volume-slider:focus-visible { outline: 2px solid var(--interactive-accent); outline-offset: 2px; border-radius: 4px; }
+.pp-volume-scale { display: flex; justify-content: space-between; color: var(--text-muted); font-size: var(--font-ui-smaller); }
+.is-mobile .pp-volume input[type="range"].pp-volume-slider { height: 44px; }
