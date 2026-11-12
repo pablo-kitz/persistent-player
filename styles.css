@@ -280,7 +280,9 @@ button.pp-button:hover:not(:disabled) { background: var(--background-modifier-ho
 button.pp-button:active:not(:disabled) { background: var(--background-modifier-active-hover, var(--background-modifier-hover)); color: var(--interactive-accent); box-shadow: inset 0 0 0 1px var(--background-modifier-border); transform: translateY(1px); }
 button.pp-button[aria-expanded="true"] { background: var(--background-modifier-hover); color: var(--interactive-accent); }
 .pp-now-playing:focus-visible, .pp-queue-playing:focus-visible { outline: 2px solid var(--interactive-accent); outline-offset: -2px; }
-button.pp-button:focus-visible { outline: 2px solid var(--interactive-accent); outline-offset: 2px; }
+/* Reset host focus chrome; keep the keyboard indicator inside the compact hit area. */
+button.pp-button:focus { border: 0; outline: none; box-shadow: none; }
+button.pp-button:focus-visible { outline: 1px solid var(--interactive-accent); outline-offset: -2px; background: var(--background-modifier-hover); color: var(--text-normal); }
 button.pp-button:disabled { opacity: .35; cursor: default; }
 button.pp-button[hidden] { display: none; }
 .is-mobile button.pp-button { width: 44px; height: 44px; min-width: 44px; min-height: 44px; }
