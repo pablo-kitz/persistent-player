@@ -117,6 +117,7 @@ function setup(mobile = false, storedData = null) {
 	}
 	class Modal {
         constructor() { this.modalEl = body.createDiv(); this.contentEl = this.modalEl.createDiv(); }
+        setTitle(title) { this.title = title; }
         open() {}
         close() { this.modalEl.remove(); this.onClose?.(); }
     }
@@ -350,7 +351,7 @@ test("transport single taps restart or advance, and double taps nudge", async ()
  back.emit("click"); await settle();
  assert.equal(audio.currentTime, 0); assert.equal(audio.paused, true);
 });
-test("mobile exposes one music action and opens the album-art player", () => {
+test("mobile exposes one music action and opens the queue-first player", () => {
  const h = setup(true); const a = h.note("Song.md"); h.focus(a); h.start(a);
  let actions = h.body.querySelectorAll(".action");
  assert.equal(actions.length, 1); assert.equal(actions[0].icon, "music");
@@ -405,9 +406,7 @@ for (const mobile of [false, true]) {
   assert.equal(bar.querySelector(".pp-np-skip"), null);
   for (const button of bar.querySelectorAll(".clickable-icon")) assert.equal(button.getAttribute("title"), null);
   const controls = bar.children.filter(el => el.hasClass("pp-np-play") || el.hasClass("pp-np-track-button"));
-  assert.deepEqual(controls.map(el => el.attributes["aria-label"]), mobile ? [
-   "Restart audio (double tap: back 5 seconds)", "Pause", "Next audio (double tap: forward 5 seconds)",
-  ] : ["Restart audio (double tap: back 5 seconds)", "Pause", "Next audio (double tap: forward 5 seconds)"]);
+  assert.deepEqual(controls.map(el => el.attributes["aria-label"]), ["Restart audio (double tap: back 5 seconds)", "Pause", "Next audio (double tap: forward 5 seconds)"]);
   if (!mobile) assert.deepEqual(bar.querySelector(".pp-np-right").children.map(el => el.attributes["aria-label"]),
    [undefined, "Playback speed", "Volume", "Open source note: Playlist.md", "Queue", "Close player"]);
  });
@@ -557,7 +556,7 @@ for (const mobile of [false, true]) {
   ctrl.enqueue("app://vault/b.mp3", "B.md");
   const el = h.body.createDiv(); const surface = h.queueSurface(el);
   el.scrollTop = 90; el.emit("scroll");
-  assert.equal(el.style["--pp-collapse"], mobile ? "0.5" : "1");
+  assert.equal(el.style["--pp-collapse"], undefined);
   ctrl.enqueue("app://vault/c.mp3", "C.md");
   assert.equal(el.scrollTop, 90);
   const seek = el.querySelector(".pp-np-center");
@@ -568,7 +567,7 @@ for (const mobile of [false, true]) {
   assert.equal(ctrl.currentTime, 42);
   ctrl.active.emit("timeupdate"); assert.equal(seek.getAttribute("aria-valuenow"), "42");
   el.scrollTop = -10; el.emit("scroll");
-  assert.equal(el.style["--pp-collapse"], mobile ? "0" : "1");
+  assert.equal(el.style["--pp-collapse"], undefined);
   surface.destroy(); ctrl.enqueue("app://vault/d.mp3", "D.md");
   assert.equal(el.children.length, 0);
  });
@@ -598,14 +597,17 @@ test("queue pointer cancellation never commits and touch swipes scroll instead o
 });
 
 for (const mobile of [false, true]) {
- test(`queue transport shares nudges without extra buttons or tooltips (${mobile})`, async () => {
+ test(`queue transport shares desktop icons and double-tap nudges (${mobile})`, async () => {
   const h = setup(mobile); const ctrl = h.plugin.ctrl;
   ctrl.loadAndPlay("app://vault/a.mp3", "A.md");
   ctrl.enqueue("app://vault/b.mp3", "B.md");
   const el = h.body.createDiv(); const surface = h.queueSurface(el);
+  await new Promise(resolve => setTimeout(resolve, 0));
   const controls = el.querySelector(".pp-queue-transport");
   const buttons = controls.querySelectorAll("button");
-  assert.equal(buttons.length, mobile ? 6 : 4);
+  assert.equal(buttons.length, mobile ? 3 : 4);
+  assert.equal(el.querySelector(".pp-queue-nudge"), null);
+  if (mobile) assert.equal(el.querySelector(".pp-np-rate").textContent, "1x");
   assert.deepEqual(buttons.slice(0, 3).map(button => button.icon), ["rewind", "pause", "fast-forward"]);
   for (const button of buttons) assert.equal(button.getAttribute("title"), null);
   ctrl.active.currentTime = 40;
@@ -615,6 +617,14 @@ for (const mobile of [false, true]) {
   buttons[2].emit("click"); buttons[2].emit("click");
   assert.equal(ctrl.currentTime, 40);
   assert.equal(buttons[2].querySelector(".pp-nudge-feedback").textContent, "+5");
+  assert.equal(ctrl.queue.length, 1);
+  buttons[0].emit("click");
+  await new Promise(resolve => setTimeout(resolve, 330));
+  assert.equal(ctrl.currentTime, 0);
+  buttons[2].emit("click");
+  await new Promise(resolve => setTimeout(resolve, 330));
+  assert.equal(ctrl.notePath, "B.md");
+  ctrl.active.currentTime = 40;
   buttons[0].emit("click");
   surface.destroy();
   await new Promise(resolve => setTimeout(resolve, 330));

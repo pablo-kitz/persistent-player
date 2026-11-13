@@ -251,7 +251,7 @@
 .pp-cover-small button.pp-cover-play { background: rgba(0, 0, 0, .45); color: white; }
 .pp-queue-playing .pp-np-center { min-width: 40px; padding: 10px 0; }
 .pp-np-center { touch-action: none; }
-.pp-np-center:focus-visible { outline: 2px solid var(--interactive-accent); outline-offset: 2px; }
+.pp-np-center:focus-visible { outline: 2px solid var(--interactive-accent); outline-offset: 2px; border-radius: 6px; }
 
 /* Shared button primitive. Surfaces set placement, never separate chrome. */
 button.pp-button {
@@ -289,20 +289,35 @@ button.pp-button[hidden] { display: none; }
 /* Artwork overlay is the sole visual variant of the same button. */
 .pp-cover-small button.pp-cover-play { width: 100%; height: 100%; background: rgba(0,0,0,.45); color: white; }
 .is-mobile button.pp-np-close { width: auto; gap: 6px; }
-/* One mobile player/queue sheet, with fixed scroll geometry. */
+/* Queue-first mobile sheet: compact playback stays above the listening list. */
 .is-mobile .pp-mobile-player { width: min(440px, calc(100vw - 24px)); }
-.is-mobile .pp-mobile-player .modal-content { height: min(76dvh, 720px); max-height: 76dvh; padding: 0 16px 16px; overflow-y: auto; overflow-anchor: none; }
-.is-mobile .pp-queue-playing { top: -180px; padding-top: 0; background: var(--modal-background, var(--background-primary)); }
-.is-mobile .pp-queue-playing .pp-recording { position: relative; height: 228px; display: block; }
-.is-mobile .pp-queue-playing .pp-cover-small { position: absolute; top: 0; left: calc((50% - 90px) * (1 - var(--pp-collapse, 0))); width: 180px; height: 180px; transform-origin: top left; transform: translateY(calc(180px * var(--pp-collapse, 0))) scale(calc(1 - .733333 * var(--pp-collapse, 0))); will-change: transform; }
-.is-mobile .pp-queue-playing .pp-recording-text { position: absolute; top: 180px; left: 0; right: 60px; transform: translateX(calc(60px * var(--pp-collapse, 0))); will-change: transform; }
-.is-mobile .pp-queue-transport { display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px 8px; }
-.is-mobile .pp-queue-transport > .pp-button { justify-self: center; }
-.is-mobile .pp-queue-transport .pp-np-center { grid-column: 1 / -1; width: 100%; padding: 16px 0; }
-.is-mobile .pp-queue-transport .pp-np-time { grid-column: 1 / -1; justify-self: start; font-size: var(--font-ui-small); }
+.is-mobile .pp-mobile-player .modal-title { font-size: var(--font-ui-medium); font-weight: 600; }
+.is-mobile .pp-mobile-player .modal-content { height: min(76dvh, 720px); max-height: 76dvh; padding: 0 20px 20px; overflow-y: auto; overflow-anchor: none; }
+.is-mobile .pp-queue-playing { top: 0; padding: 12px 0 0; background: var(--modal-background, var(--background-primary)); }
+.is-mobile .pp-queue-playing .pp-recording { gap: 14px; margin-bottom: 14px; color: var(--text-normal); }
+.is-mobile .pp-queue-playing .pp-cover-small { width: 56px; height: 56px; flex-basis: 56px; border-radius: 9px; color: var(--interactive-accent); }
+.is-mobile .pp-queue-playing .pp-track-title { font-size: 19px; line-height: 1.3; font-weight: 600; }
+.is-mobile .pp-queue-playing .pp-track-detail { line-height: 1.5; color: var(--text-muted); }
+.is-mobile button.pp-button.pp-queue-source { display: block; width: auto; min-width: 0; max-width: 100%; height: auto; min-height: 28px; padding: 4px 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; border: 0; box-shadow: none; background: transparent; color: var(--text-muted); font-size: var(--font-ui-smaller); }
+.is-mobile .pp-queue-progress .pp-np-center { width: 100%; padding: 18px 0; }
+.is-mobile .pp-queue-progress .pp-np-time { display: block; padding: 0; color: var(--text-muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+.is-mobile .pp-queue-transport { display: flex; justify-content: space-around; gap: 8px; margin: 12px 0; }
 .is-mobile button.pp-button { width: 48px; height: 48px; min-width: 48px; min-height: 48px; }
 .is-mobile button.pp-button svg { width: 24px; height: 24px; }
-.is-mobile .pp-queue-transport button.pp-np-play svg { width: 32px; height: 32px; }
+.is-mobile .pp-queue-utility { display: flex; align-items: center; justify-content: space-between; gap: 6px; padding: 8px 0; border-block: 1px solid var(--background-modifier-border); }
+.is-mobile .pp-queue-utility button.pp-np-rate { width: auto; min-width: 0; height: auto; padding: 10px; line-height: 1.4; border-radius: 5px; }
+.is-mobile .pp-queue-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; margin: 20px 0 6px; }
+.is-mobile .pp-queue-heading h3 { margin: 0; font-size: 15px; font-weight: 600; }
+.is-mobile .pp-queue-heading > span { color: var(--text-muted); font-size: 11px; }
+.is-mobile .pp-queue-row { min-height: 68px; border-bottom: 1px solid var(--background-modifier-border); }
+.is-mobile .pp-queue-row .pp-cover-small { width: 40px; height: 40px; flex-basis: 40px; border-radius: 6px; }
+.is-mobile .pp-queue-row .pp-track-detail { margin-top: 4px; color: var(--text-muted); }
+.is-mobile .pp-queue-grip { display: flex; color: var(--text-faint); }
+.is-mobile .pp-queue-grip svg { width: 16px; height: 20px; }
+@media (max-width: 360px) {
+ .is-mobile .pp-mobile-player .modal-content { padding-inline: 12px; }
+ .is-mobile .pp-queue-transport button.pp-button { width: 44px; min-width: 44px; }
+}
 @media (hover: none) {
  .pp-cover-small .pp-cover-play, .pp-cover-small:hover .pp-cover-play { opacity: 0; }
  .pp-cover-small .pp-cover-play:active, .pp-cover-small .pp-cover-play:focus-visible { opacity: 1; }

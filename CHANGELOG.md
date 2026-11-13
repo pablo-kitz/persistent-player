@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.0.13
+
+- Replace the collapsing mobile album view with a queue-first player: the current recording, source note, seek bar, and transport stay above the up-next list.
+- Show the speed control as the rate plus any tuning offset, and label stop as text.
+- Show a queued recording's source note and a drag grip.
+- Round the playback-position focus outline so it follows the full track.
+- Draw player button focus rings inside the button.
+
 ## 1.0.12
 
 - Toggle playback with Space while the player is focused.

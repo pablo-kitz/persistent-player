@@ -335,6 +335,7 @@ class NowPlayingBar {
             const panel = new Modal(this.app);
             this.panel = panel;
             panel.modalEl.addClass("pp-mobile-player");
+            panel.setTitle("Player & queue");
             const surface = new QueueSurface(panel.contentEl, this.ctrl, this.app, () => panel.close());
             panel.onClose = () => { surface.destroy(); this.panel = null; this.show(); };
             panel.open();
@@ -809,11 +810,6 @@ class QueueSurface {
  private metadataCache = new Map<string, Promise<MediaMetadataInit>>();
  private playhead?: SeekTrack;
  private time?: HTMLElement;
- private scroll = () => {
-  // Only artwork transforms change; the header and list keep fixed geometry.
-  const progress = Platform.isMobile ? Math.max(0, Math.min(1, this.container.scrollTop / 180)) : 1;
-  this.container.style.setProperty("--pp-collapse", String(progress));
- };
  constructor(private container: HTMLElement, private ctrl: Controller, private app: App, private close: () => void = () => {}) {
   this.transport = new TransportButtons(ctrl);
   for (const event of ["queue", "change", "metadata", "ratechange"] as const) this.off.push(ctrl.on(event, () => this.render()));
@@ -822,7 +818,6 @@ class QueueSurface {
    if (play) syncPlaybackButton(play, ctrl.playing);
   }));
   this.off.push(ctrl.on("timeupdate", () => this.syncProgress()));
-  container.addEventListener("scroll", this.scroll, {passive: true});
   this.render();
  }
  private syncProgress() {
@@ -843,22 +838,38 @@ class QueueSurface {
   if (this.ctrl.active) {
    const identity = this.head.createDiv("pp-recording");
    renderRecording(identity, this.ctrl.active.src, this.ctrl.metadata);
+   if (Platform.isMobile && this.ctrl.notePath) {
+    const source = actionButton(identity.querySelector<HTMLElement>(".pp-recording-text")!, null, `Open source note: ${this.ctrl.notePath}`, () => {
+     void this.app.workspace.openLinkText(this.ctrl.notePath, ""); this.close();
+    });
+    source.addClass("pp-queue-source");
+    source.textContent = `From ${this.ctrl.notePath.split("/").pop()?.replace(/\.md$/, "")}`;
+   }
+   const progress = Platform.isMobile ? this.head.createDiv("pp-queue-progress") : null;
    const controls = this.head.createDiv("pp-queue-transport");
    this.transport.create(controls, "rewind", "Restart audio (double tap: back 5 seconds)", -1);
    const play = playbackButton(controls, () => this.ctrl.toggle());
    play.addClass("pp-np-play");
    syncPlaybackButton(play, this.ctrl.playing);
    this.transport.create(controls, "fast-forward", "Next audio (double tap: forward 5 seconds)", 1).disabled = !this.ctrl.canSkipTrack(1);
-   this.playhead = new SeekTrack(controls, this.ctrl);
-   this.time = controls.createSpan("pp-np-time");
+   this.playhead = new SeekTrack(progress ?? controls, this.ctrl);
+   this.time = (progress ?? controls).createSpan("pp-np-time");
    this.syncProgress();
-   volumeButton(controls, this.ctrl);
+   const utility = Platform.isMobile ? this.head.createDiv("pp-queue-utility") : controls;
+   volumeButton(utility, this.ctrl);
    if (Platform.isMobile) {
-    speedButton(controls, this.ctrl);
-    const stop = actionButton(controls, "square", "Stop playback", () => { this.ctrl.clearNote(this.ctrl.notePath); this.close(); });
-    stop.addClass("pp-np-close");
+    const speed = speedButton(utility, this.ctrl);
+    speed.textContent = `${this.ctrl.playbackRate}x${this.ctrl.detune === 0 ? "" : ` \u00b7 ${this.ctrl.detune > 0 ? "+" : ""}${this.ctrl.detune} cents`}`;
+    speed.setAttribute("aria-label", "Speed and tuning");
+    const stop = actionButton(utility, null, "Stop playback", () => { this.ctrl.clearNote(this.ctrl.notePath); this.close(); });
+    stop.addClass("pp-np-close"); stop.textContent = "Stop";
    }
   } else this.head.hidden = true;
+  if (Platform.isMobile) {
+   const heading = el.createDiv("pp-queue-heading");
+   heading.createEl("h3", {text: "Up next"});
+   heading.createSpan({text: `${this.ctrl.queue.length} recording${this.ctrl.queue.length === 1 ? "" : "s"}`});
+  }
   if (!this.ctrl.queue.length) {
    const empty = el.createDiv("pp-queue-empty");
    empty.createDiv({cls: "pp-queue-empty-title", text: this.ctrl.hasActive ? "Nothing queued" : "Your queue is empty"});
@@ -869,6 +880,11 @@ class QueueSurface {
    const identity = row.createDiv("pp-recording");
    const paint = (metadata: MediaMetadataInit) => {
     renderRecording(identity, track.src, metadata);
+    if (Platform.isMobile) {
+     if (track.note) identity.querySelector<HTMLElement>(".pp-recording-text")!.createDiv({cls: "pp-track-detail", text: track.note.split("/").pop()?.replace(/\.md$/, "") ?? track.note});
+     const grip = identity.createSpan({cls: "pp-queue-grip", attr: {"aria-hidden": "true"}});
+     setIcon(grip, "grip-vertical");
+    }
     const art = identity.querySelector<HTMLElement>(".pp-cover-small")!;
     const play = playbackButton(art, () => this.ctrl.playQueued(index));
     play.setAttribute("aria-label", `Play ${metadata.title || audioFilename(track.src)}`);
@@ -930,13 +946,13 @@ class QueueSurface {
    identity.addEventListener("lostpointercapture", end);
    actionButton(row, "x", "Remove from queue", () => this.ctrl.removeQueued(index));
   });
-  el.scrollTop = scrollTop; this.scroll();
+  el.scrollTop = scrollTop;
  }
  destroy() {
   closePopoverWithin(this.container);
   this.transport.cancel();
   this.dragCleanups.forEach(cleanup => cleanup()); this.metadataCache.clear();
-  this.off.forEach(off => off()); this.container.removeEventListener("scroll", this.scroll);
+  this.off.forEach(off => off());
   this.container.replaceChildren();
  }
 }
